@@ -18,7 +18,7 @@ import { router, useLocalSearchParams } from "expo-router";
 import { usePortfolio, usePropertyTransactions, usePropertyReceipts, usePropertyReminders, usePropertyPhotos } from "@/hooks/portfolio-store";
 import { PropertyPhoto } from "@/types/property";
 import * as ImagePicker from "expo-image-picker";
-import { Edit, Home, DollarSign, FileText, Bell, Plus, Trash2, Image as ImageIcon, Camera, X, MessageSquare, Mail, CalendarDays } from "lucide-react-native";
+import { Edit, Home, DollarSign, FileText, Bell, Plus, Trash2, Image as ImageIcon, Camera, X, MessageSquare, Mail, CalendarDays, Share2, Folder, Wrench } from "lucide-react-native";
 import { Linking } from "react-native";
 import * as Calendar from "expo-calendar";
 import * as Sharing from "expo-sharing";
@@ -27,11 +27,13 @@ import { formatDisplayDate, parseStoredDate } from "@/lib/dates";
 
 export default function PropertyDetailsScreen() {
   const { id } = useLocalSearchParams();
-  const { properties, deleteProperty, deleteReminder } = usePortfolio();
+  const { properties, leaseFolders, leaseDocuments, deleteProperty, deleteReminder } = usePortfolio();
   const transactions = usePropertyTransactions(id as string);
   const receipts = usePropertyReceipts(id as string);
   const reminders = usePropertyReminders(id as string);
   const photos = usePropertyPhotos(id as string);
+  const propertyLeaseFolders = leaseFolders.filter(folder => folder.propertyId === id);
+  const propertyLeaseDocuments = leaseDocuments.filter(document => document.propertyId === id);
   
   const [showPhotoModal, setShowPhotoModal] = useState(false);
   const [selectedPhotoUris, setSelectedPhotoUris] = useState<string[]>([]);
@@ -400,6 +402,20 @@ export default function PropertyDetailsScreen() {
               <Edit size={16} color="#3B82F6" />
               <Text style={styles.editButtonText}>Edit</Text>
             </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.summaryButton}
+              onPress={() => router.push(`/property-summary?id=${property.id}` as any)}
+            >
+              <Share2 size={16} color="#2563EB" />
+              <Text style={styles.summaryButtonText}>Share Summary</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.maintenanceButton}
+              onPress={() => router.push(`/property-maintenance?id=${property.id}` as any)}
+            >
+              <Wrench size={16} color="#047857" />
+              <Text style={styles.maintenanceButtonText}>Maintenance</Text>
+            </TouchableOpacity>
             <TouchableOpacity 
               style={[styles.galleryHeaderBtn, showGallery && styles.galleryHeaderBtnActive]}
               onPress={() => setShowGallery(!showGallery)}
@@ -602,6 +618,12 @@ export default function PropertyDetailsScreen() {
                   <Text style={styles.detailLabel}>Type</Text>
                   <Text style={styles.detailValue}>{property.type.replace('-', ' ')}</Text>
                 </View>
+                {property.squareFootage != null && property.squareFootage > 0 && (
+                  <View style={styles.detailRow}>
+                    <Text style={styles.detailLabel}>Square Footage</Text>
+                    <Text style={styles.detailValue}>{property.squareFootage.toLocaleString()} sq ft</Text>
+                  </View>
+                )}
                 <View style={styles.detailRow}>
                   <Text style={styles.detailLabel}>Purchase Date</Text>
                   <Text style={styles.detailValue}>{formatDate(property.purchaseDate)}</Text>
@@ -798,21 +820,67 @@ export default function PropertyDetailsScreen() {
         {activeTab === "documents" && (
           <View>
             <View style={styles.sectionHeader}>
-              <Text style={styles.sectionTitle}>Documents ({receipts.length})</Text>
+              <Text style={styles.sectionTitle}>Documents ({receipts.length + propertyLeaseDocuments.length})</Text>
               <TouchableOpacity
                 style={styles.addButton}
-                onPress={() => router.push('/add-receipt' as any)}
+                onPress={() => router.push('/create-lease-document' as any)}
               >
                 <Plus size={16} color="#FFFFFF" />
-                <Text style={styles.addButtonText}>Add</Text>
+                <Text style={styles.addButtonText}>Add Document</Text>
               </TouchableOpacity>
             </View>
-            {receipts.length === 0 ? (
+
+            {propertyLeaseFolders.length > 0 && (
+              <View style={styles.propertyDocumentSection}>
+                <Text style={styles.documentSectionLabel}>Folders</Text>
+                {propertyLeaseFolders.map(folder => {
+                  const folderDocumentCount = propertyLeaseDocuments.filter(document => document.folderId === folder.id).length;
+                  return (
+                    <TouchableOpacity
+                      key={folder.id}
+                      style={[styles.propertyFolderRow, { borderLeftColor: folder.color || "#3B82F6" }]}
+                      onPress={() => router.push(`/lease-folder/${folder.id}` as any)}
+                    >
+                      <Folder size={22} color={folder.color || "#3B82F6"} />
+                      <View style={styles.propertyFolderInfo}>
+                        <Text style={styles.propertyFolderName}>{folder.name}</Text>
+                        <Text style={styles.propertyFolderCount}>{folderDocumentCount} document{folderDocumentCount === 1 ? "" : "s"}</Text>
+                      </View>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            )}
+
+            {propertyLeaseDocuments.length > 0 && (
+              <View style={styles.propertyDocumentSection}>
+                <Text style={styles.documentSectionLabel}>Property Documents</Text>
+                {propertyLeaseDocuments.map(document => {
+                  const folder = propertyLeaseFolders.find(item => item.id === document.folderId);
+                  return (
+                    <TouchableOpacity
+                      key={document.id}
+                      style={styles.propertyDocumentRow}
+                      onPress={() => router.push(`/lease-document/${document.id}` as any)}
+                    >
+                      <FileText size={21} color="#2563EB" />
+                      <View style={styles.propertyDocumentInfo}>
+                        <Text style={styles.propertyDocumentTitle}>{document.title}</Text>
+                        <Text style={styles.propertyDocumentMeta}>{folder?.name || "Unfiled"} · {document.type}</Text>
+                      </View>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            )}
+
+            {receipts.length > 0 && <Text style={styles.documentSectionLabel}>Receipts</Text>}
+            {receipts.length === 0 && propertyLeaseDocuments.length === 0 && propertyLeaseFolders.length === 0 ? (
               <View style={styles.emptyState}>
                 <FileText size={48} color="#D1D5DB" />
                 <Text style={styles.emptyStateText}>No documents yet</Text>
               </View>
-            ) : (
+            ) : receipts.length > 0 ? (
               <View style={styles.documentsGrid}>
                 {receipts.map(receipt => (
                   <View key={receipt.id} style={styles.documentCard}>
@@ -830,7 +898,7 @@ export default function PropertyDetailsScreen() {
                   </View>
                 ))}
               </View>
-            )}
+            ) : null}
           </View>
         )}
 
@@ -1184,6 +1252,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     gap: 8,
     marginTop: 12,
+    flexWrap: "wrap",
   },
   editButton: {
     flexDirection: "row",
@@ -1197,6 +1266,38 @@ const styles = StyleSheet.create({
   },
   editButtonText: {
     color: "#3B82F6",
+    fontSize: 14,
+    fontWeight: "500" as const,
+  },
+  summaryButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: "#93C5FD",
+    backgroundColor: "#EFF6FF",
+    gap: 4,
+  },
+  summaryButtonText: {
+    color: "#2563EB",
+    fontSize: 14,
+    fontWeight: "500" as const,
+  },
+  maintenanceButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: "#A7F3D0",
+    backgroundColor: "#ECFDF5",
+    gap: 4,
+  },
+  maintenanceButtonText: {
+    color: "#047857",
     fontSize: 14,
     fontWeight: "500" as const,
   },
@@ -1398,6 +1499,64 @@ const styles = StyleSheet.create({
     color: "#3B82F6",
     fontSize: 12,
     fontWeight: "600" as const,
+  },
+  propertyDocumentSection: {
+    marginBottom: 18,
+  },
+  documentSectionLabel: {
+    color: "#475569",
+    fontSize: 13,
+    fontWeight: "700" as const,
+    textTransform: "uppercase" as const,
+    marginBottom: 8,
+  },
+  propertyFolderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 11,
+    backgroundColor: "#FFFFFF",
+    borderLeftWidth: 4,
+    borderRadius: 9,
+    padding: 13,
+    marginBottom: 8,
+  },
+  propertyFolderInfo: {
+    flex: 1,
+  },
+  propertyFolderName: {
+    color: "#1E293B",
+    fontSize: 15,
+    fontWeight: "700" as const,
+  },
+  propertyFolderCount: {
+    color: "#64748B",
+    fontSize: 12,
+    marginTop: 2,
+  },
+  propertyDocumentRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 11,
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    borderRadius: 9,
+    padding: 13,
+    marginBottom: 8,
+  },
+  propertyDocumentInfo: {
+    flex: 1,
+  },
+  propertyDocumentTitle: {
+    color: "#1E293B",
+    fontSize: 15,
+    fontWeight: "600" as const,
+  },
+  propertyDocumentMeta: {
+    color: "#64748B",
+    fontSize: 12,
+    marginTop: 3,
+    textTransform: "capitalize" as const,
   },
   documentsGrid: {
     flexDirection: "row",

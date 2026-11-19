@@ -1,7 +1,7 @@
 import createContextHook from '@nkzw/create-context-hook';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useEffect, useState, useMemo, useCallback } from 'react';
-import { Property, Transaction, Receipt, Reminder, LeaseFolder, LeaseDocument, PropertyPhoto, Appliance, PaintColor, CustomPropertyField, PortfolioContact, ContactPhoneNumber, ContactCategory } from '@/types/property';
+import { Property, Transaction, Receipt, Reminder, MaintenanceLogEntry, LeaseFolder, LeaseDocument, PropertyPhoto, Appliance, PaintColor, CustomPropertyField, PortfolioContact, ContactPhoneNumber, ContactCategory } from '@/types/property';
 import { Platform, Alert } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
@@ -302,6 +302,10 @@ const TABLE_COLUMN_ALLOWLIST: Record<string, Set<string>> = {
     'id', 'user_id', 'household_id', 'property_id', 'type', 'title', 'due_date', 'notes', 'completed', 'recipient_phone',
     'recipient_email', 'created_at', 'updated_at'
   ]),
+  maintenance_logs: new Set([
+    'id', 'user_id', 'household_id', 'property_id', 'issue', 'date_notified', 'date_repaired', 'cost', 'responsibility',
+    'follow_up_needed', 'follow_up_details', 'equipment_tags', 'notes', 'created_at', 'updated_at'
+  ]),
   lease_folders: new Set([
     'id', 'user_id', 'household_id', 'property_id', 'name', 'color', 'created_at', 'updated_at'
   ]),
@@ -451,6 +455,24 @@ function dbToReminder(row: any): Reminder {
   };
 }
 
+function dbToMaintenanceLog(row: any): MaintenanceLogEntry {
+  return {
+    id: row.id,
+    propertyId: row.property_id,
+    issue: row.issue,
+    dateNotified: row.date_notified,
+    dateRepaired: row.date_repaired || undefined,
+    cost: row.cost == null ? undefined : Number(row.cost),
+    responsibility: row.responsibility || 'owner',
+    followUpNeeded: Boolean(row.follow_up_needed),
+    followUpDetails: row.follow_up_details || undefined,
+    equipmentTags: normalizeTags(row.equipment_tags),
+    notes: row.notes || undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
 function dbToLeaseFolder(row: any): LeaseFolder {
   return {
     id: row.id,
@@ -512,6 +534,7 @@ export const [PortfolioProvider, usePortfolio] = createContextHook(() => {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [receipts, setReceipts] = useState<Receipt[]>([]);
   const [reminders, setReminders] = useState<Reminder[]>([]);
+  const [maintenanceLogs, setMaintenanceLogs] = useState<MaintenanceLogEntry[]>([]);
   const [leaseFolders, setLeaseFolders] = useState<LeaseFolder[]>([]);
   const [leaseDocuments, setLeaseDocuments] = useState<LeaseDocument[]>([]);
   const [propertyPhotos, setPropertyPhotos] = useState<PropertyPhoto[]>([]);
@@ -540,6 +563,7 @@ export const [PortfolioProvider, usePortfolio] = createContextHook(() => {
         setTransactions([]);
         setReceipts([]);
         setReminders([]);
+        setMaintenanceLogs([]);
         setLeaseFolders([]);
         setLeaseDocuments([]);
         setPropertyPhotos([]);
@@ -547,11 +571,12 @@ export const [PortfolioProvider, usePortfolio] = createContextHook(() => {
         return;
       }
 
-      const [propsRes, txRes, recRes, remRes, foldersRes, docsRes, contactsRes] = await Promise.all([
+      const [propsRes, txRes, recRes, remRes, maintenanceRes, foldersRes, docsRes, contactsRes] = await Promise.all([
         fetchTableRows('properties', { filterKey: 'household_id', filterValue: normalizedHouseholdId, orderBy: { column: 'created_at', ascending: true } }).catch(() => []),
         fetchTableRows('transactions', { filterKey: 'household_id', filterValue: normalizedHouseholdId, orderBy: { column: 'tx_date', ascending: false } }).catch(() => []),
         fetchTableRows('receipts', { filterKey: 'household_id', filterValue: normalizedHouseholdId, orderBy: { column: 'receipt_date', ascending: false } }).catch(() => []),
         fetchTableRows('reminders', { filterKey: 'household_id', filterValue: normalizedHouseholdId, orderBy: { column: 'due_date', ascending: true } }).catch(() => []),
+        fetchTableRows('maintenance_logs', { filterKey: 'household_id', filterValue: normalizedHouseholdId, orderBy: { column: 'date_notified', ascending: false } }).catch(() => []),
         fetchTableRows('lease_folders', { filterKey: 'household_id', filterValue: normalizedHouseholdId, orderBy: { column: 'created_at', ascending: true } }).catch(() => []),
         fetchTableRows('lease_documents', { filterKey: 'household_id', filterValue: normalizedHouseholdId, orderBy: { column: 'updated_at', ascending: false } }).catch(() => []),
         fetchTableRows('household_contacts', { filterKey: 'household_id', filterValue: normalizedHouseholdId, orderBy: { column: 'name', ascending: true } }).catch(() => []),
@@ -576,6 +601,7 @@ export const [PortfolioProvider, usePortfolio] = createContextHook(() => {
       setTransactions(txRes.map(dbToTransaction));
       setReceipts(recRes.map(dbToReceipt));
       setReminders(remRes.map(dbToReminder));
+      setMaintenanceLogs(maintenanceRes.map(dbToMaintenanceLog));
       setLeaseFolders(foldersRes.map(dbToLeaseFolder));
       setLeaseDocuments(docsRes.map(dbToLeaseDocument));
       setPropertyPhotos(photosRes.map(dbToPropertyPhoto));
@@ -598,6 +624,7 @@ export const [PortfolioProvider, usePortfolio] = createContextHook(() => {
         setTransactions([]);
         setReceipts([]);
         setReminders([]);
+        setMaintenanceLogs([]);
         setLeaseFolders([]);
         setLeaseDocuments([]);
         setPropertyPhotos([]);
@@ -660,6 +687,30 @@ export const [PortfolioProvider, usePortfolio] = createContextHook(() => {
             setReminders(prev => prev.map(r => r.id === payload.new.id ? dbToReminder(payload.new) : r));
           } else if (payload.eventType === 'DELETE') {
             setReminders(prev => prev.filter(r => r.id !== payload.old.id));
+          }
+        }
+      )
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'maintenance_logs', filter: `household_id=eq.${householdId}` },
+        (payload) => {
+          if (payload.eventType === 'INSERT') {
+            const inserted = dbToMaintenanceLog(payload.new);
+            setMaintenanceLogs(prev => prev.some(entry => entry.id === inserted.id) ? prev : [inserted, ...prev]);
+          } else if (payload.eventType === 'UPDATE') {
+            setMaintenanceLogs(prev => prev.map(entry => entry.id === payload.new.id ? dbToMaintenanceLog(payload.new) : entry));
+          } else if (payload.eventType === 'DELETE') {
+            setMaintenanceLogs(prev => prev.filter(entry => entry.id !== payload.old.id));
+          }
+        }
+      )
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'maintenance_logs', filter: `household_id=eq.${householdId}` },
+        (payload) => {
+          if (payload.eventType === 'INSERT') {
+            const inserted = dbToMaintenanceLog(payload.new);
+            setMaintenanceLogs(prev => prev.some(entry => entry.id === inserted.id) ? prev : [inserted, ...prev]);
+          } else if (payload.eventType === 'UPDATE') {
+            setMaintenanceLogs(prev => prev.map(entry => entry.id === payload.new.id ? dbToMaintenanceLog(payload.new) : entry));
+          } else if (payload.eventType === 'DELETE') {
+            setMaintenanceLogs(prev => prev.filter(entry => entry.id !== payload.old.id));
           }
         }
       )
@@ -1202,6 +1253,15 @@ export const [PortfolioProvider, usePortfolio] = createContextHook(() => {
     const leaseFoldersSnapshot = leaseFolders;
     const leaseDocumentsSnapshot = leaseDocuments;
     const propertyPhotosSnapshot = propertyPhotos;
+    const maintenanceSnapshot = maintenanceLogs.filter(entry => entry.propertyId === id);
+
+    if (maintenanceSnapshot.length > 0) {
+      const { error: maintenanceDeleteError } = await supabase.from('maintenance_logs').delete().eq('property_id', id);
+      if (maintenanceDeleteError) {
+        console.error('Error deleting property maintenance logs:', maintenanceDeleteError);
+        throw maintenanceDeleteError;
+      }
+    }
 
     setProperties(prev => prev.filter(p => p.id !== id));
     setTransactions(prev => prev.filter(t => t.propertyId !== id));
@@ -1210,6 +1270,7 @@ export const [PortfolioProvider, usePortfolio] = createContextHook(() => {
     setLeaseFolders(prev => prev.filter(f => f.propertyId !== id));
     setLeaseDocuments(prev => prev.filter(d => d.propertyId !== id));
     setPropertyPhotos(prev => prev.filter(photo => photo.propertyId !== id));
+    setMaintenanceLogs(prev => prev.filter(entry => entry.propertyId !== id));
 
     const { error } = await supabase.from('properties').delete().eq('id', id);
     if (error) {
@@ -1220,10 +1281,32 @@ export const [PortfolioProvider, usePortfolio] = createContextHook(() => {
       setLeaseFolders(leaseFoldersSnapshot);
       setLeaseDocuments(leaseDocumentsSnapshot);
       setPropertyPhotos(propertyPhotosSnapshot);
+      setMaintenanceLogs(prev => [...maintenanceSnapshot, ...prev]);
+      if (maintenanceSnapshot.length > 0) {
+        const restorePayload = maintenanceSnapshot.map(entry => ({
+          id: entry.id,
+          household_id: householdId,
+          user_id: user?.id,
+          property_id: entry.propertyId,
+          issue: entry.issue,
+          date_notified: entry.dateNotified,
+          date_repaired: entry.dateRepaired ?? null,
+          cost: entry.cost ?? null,
+          responsibility: entry.responsibility,
+          follow_up_needed: entry.followUpNeeded,
+          follow_up_details: entry.followUpDetails ?? null,
+          equipment_tags: entry.equipmentTags,
+          notes: entry.notes ?? null,
+          created_at: entry.createdAt,
+          updated_at: entry.updatedAt,
+        }));
+        const { error: restoreError } = await supabase.from('maintenance_logs').insert(restorePayload);
+        if (restoreError) console.error('Error restoring maintenance logs after property deletion failed:', restoreError);
+      }
       console.error('Error deleting property:', error);
       throw error;
     }
-  }, [properties, transactions, receipts, reminders, leaseFolders, leaseDocuments, propertyPhotos]);
+  }, [properties, transactions, receipts, reminders, leaseFolders, leaseDocuments, propertyPhotos, maintenanceLogs, householdId, user?.id]);
 
   // Transaction CRUD operations
   const addTransaction = useCallback(async (transaction: Transaction): Promise<Transaction> => {
@@ -1541,6 +1624,76 @@ export const [PortfolioProvider, usePortfolio] = createContextHook(() => {
       console.warn('Failed to cancel local reminder notification:', notificationError);
     }
   }, [reminders]);
+
+  const addMaintenanceLog = useCallback(async (entry: MaintenanceLogEntry): Promise<MaintenanceLogEntry> => {
+    if (!householdId) throw new Error('No household selected. Please create or join a household first.');
+    if (!user?.id) throw new Error('No authenticated user found. Please sign in again and retry.');
+
+    const optimisticId = `tmp_maintenance_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const now = new Date().toISOString();
+    const optimisticEntry = { ...entry, id: optimisticId, createdAt: entry.createdAt || now, updatedAt: entry.updatedAt || now };
+    setMaintenanceLogs(prev => [optimisticEntry, ...prev]);
+
+    const { data, error } = await retryMissingColumnOperation<MaintenanceLogEntry>('maintenance_logs', {
+      user_id: user.id,
+      household_id: householdId,
+      property_id: entry.propertyId,
+      issue: entry.issue.trim(),
+      date_notified: normalizeStoredDate(entry.dateNotified),
+      date_repaired: normalizeOptionalDate(entry.dateRepaired),
+      cost: entry.cost,
+      responsibility: entry.responsibility,
+      follow_up_needed: entry.followUpNeeded,
+      follow_up_details: entry.followUpDetails?.trim() || null,
+      equipment_tags: normalizeTags(entry.equipmentTags),
+      notes: entry.notes?.trim() || null,
+    }, 'insert');
+
+    if (error || !data) {
+      setMaintenanceLogs(prev => prev.filter(item => item.id !== optimisticId));
+      console.error('Error adding maintenance log:', error);
+      throw error || new Error('Maintenance log insert succeeded but returned no record.');
+    }
+
+    const inserted = dbToMaintenanceLog(data);
+    setMaintenanceLogs(prev => prev.map(item => item.id === optimisticId ? inserted : item));
+    return inserted;
+  }, [householdId, user?.id]);
+
+  const updateMaintenanceLog = useCallback(async (id: string, updates: Partial<MaintenanceLogEntry>) => {
+    const previous = maintenanceLogs.find(item => item.id === id);
+    if (!previous) throw new Error('Maintenance log entry not found.');
+    setMaintenanceLogs(prev => prev.map(item => item.id === id ? { ...item, ...updates, updatedAt: new Date().toISOString() } : item));
+
+    const updateData: Record<string, any> = { updated_at: new Date().toISOString() };
+    if (updates.issue !== undefined) updateData.issue = updates.issue.trim();
+    if (updates.dateNotified !== undefined) updateData.date_notified = normalizeStoredDate(updates.dateNotified);
+    if (updates.dateRepaired !== undefined) updateData.date_repaired = normalizeOptionalDate(updates.dateRepaired) ?? null;
+    if (updates.cost !== undefined) updateData.cost = updates.cost;
+    if (updates.responsibility !== undefined) updateData.responsibility = updates.responsibility;
+    if (updates.followUpNeeded !== undefined) updateData.follow_up_needed = updates.followUpNeeded;
+    if (updates.followUpDetails !== undefined) updateData.follow_up_details = updates.followUpDetails.trim() || null;
+    if (updates.equipmentTags !== undefined) updateData.equipment_tags = normalizeTags(updates.equipmentTags);
+    if (updates.notes !== undefined) updateData.notes = updates.notes.trim() || null;
+
+    const { error } = await supabase.from('maintenance_logs').update(updateData).eq('id', id);
+    if (error) {
+      setMaintenanceLogs(prev => prev.map(item => item.id === id ? previous : item));
+      console.error('Error updating maintenance log:', error);
+      throw error;
+    }
+  }, [maintenanceLogs]);
+
+  const deleteMaintenanceLog = useCallback(async (id: string) => {
+    const snapshot = maintenanceLogs;
+    setMaintenanceLogs(prev => prev.filter(item => item.id !== id));
+    const { error } = await supabase.from('maintenance_logs').delete().eq('id', id);
+    if (error) {
+      setMaintenanceLogs(snapshot);
+      console.error('Error deleting maintenance log:', error);
+      throw error;
+    }
+  }, [maintenanceLogs]);
 
   // Property Photo CRUD operations
   const addPropertyPhoto = useCallback(async (photo: PropertyPhoto): Promise<PropertyPhoto> => {
@@ -2153,12 +2306,13 @@ ${document.tags.length > 0 ? `\nTags: ${document.tags.join(', ')}` : ''}
   }, []);
 
   return {
-    properties, transactions, receipts, reminders, leaseFolders, leaseDocuments, propertyPhotos, contacts,
+    properties, transactions, receipts, reminders, maintenanceLogs, leaseFolders, leaseDocuments, propertyPhotos, contacts,
     isLoading, isSyncing,
     addProperty, updateProperty, reorderProperties, deleteProperty,
     addTransaction, updateTransaction, deleteTransaction,
     addReceipt, updateReceipt, deleteReceipt,
     addReminder, updateReminder, deleteReminder,
+    addMaintenanceLog, updateMaintenanceLog, deleteMaintenanceLog,
     addLeaseFolder, updateLeaseFolder, deleteLeaseFolder, reorderLeaseFolders,
     addLeaseDocument, updateLeaseDocument, deleteLeaseDocument,
     addPropertyPhoto, updatePropertyPhoto, deletePropertyPhoto,

@@ -10,7 +10,7 @@ import {
   Modal,
 } from "react-native";
 import { router } from "expo-router";
-import { Plus, TrendingUp, TrendingDown, Filter, Calendar, Download } from "lucide-react-native";
+import { Plus, TrendingUp, TrendingDown, Filter, Calendar, Download, FileSpreadsheet } from "lucide-react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { usePortfolio, parseTransactionDate } from "@/hooks/portfolio-store";
 import { EXPENSE_CATEGORIES, INCOME_CATEGORIES } from "@/constants/categories";
@@ -224,6 +224,13 @@ export default function FinancesScreen() {
         <View style={styles.sectionHeader}>
           <Text style={styles.sectionTitle}>Recent Transactions</Text>
           <View style={styles.headerButtons}>
+            <TouchableOpacity
+              style={styles.importButton}
+              onPress={() => router.push('/transaction-import' as any)}
+            >
+              <FileSpreadsheet size={16} color="#2563EB" />
+              <Text style={styles.importButtonText}>Import</Text>
+            </TouchableOpacity>
             <TouchableOpacity
               style={styles.exportButton}
               onPress={() => setShowExportModal(true)}
@@ -525,6 +532,22 @@ const styles = StyleSheet.create({
   headerButtons: {
     flexDirection: "row",
     gap: 8,
+  },
+  importButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#EFF6FF",
+    borderWidth: 1,
+    borderColor: "#BFDBFE",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    gap: 4,
+  },
+  importButtonText: {
+    color: "#2563EB",
+    fontSize: 13,
+    fontWeight: "600" as const,
   },
   exportButton: {
     flexDirection: "row",

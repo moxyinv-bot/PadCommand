@@ -85,6 +85,83 @@ export default function LeaseDocumentScreen() {
   const [editTags, setEditTags] = useState(document?.tags.join(', ') || '');
   const [editNotes, setEditNotes] = useState(document?.notes || '');
 
+  const handleEdit = () => {
+    if (!document) return;
+    setEditTitle(document.title);
+    setEditContent(document.content);
+    setEditType(document.type);
+    setEditTenantName(document.tenantName || '');
+    setEditDocumentDate(document.dateOfDocument || '');
+    setEditTags(document.tags.join(', '));
+    setEditNotes(document.notes || '');
+    setIsEditing(true);
+  };
+
+  const handleSave = async () => {
+    if (!document) return;
+    if (!editTitle.trim()) {
+      Alert.alert('Missing title', 'Please enter a document title.');
+      return;
+    }
+    if (!editContent.trim()) {
+      Alert.alert('Missing content', 'Please enter document content.');
+      return;
+    }
+
+    try {
+      await updateLeaseDocument(document.id, {
+        title: editTitle.trim(),
+        content: editContent.trim(),
+        type: editType,
+        tenantName: editTenantName.trim() || undefined,
+        dateOfDocument: editDocumentDate || undefined,
+        tags: editTags.split(',').map(tag => tag.trim()).filter(Boolean),
+        notes: editNotes.trim() || undefined,
+      });
+      setIsEditing(false);
+    } catch (error) {
+      console.error('Error updating lease document:', error);
+      Alert.alert('Save failed', 'Could not update this document. Please try again.');
+    }
+  };
+
+  const handleCancel = () => {
+    setIsEditing(false);
+  };
+
+  const handleDelete = () => {
+    if (!document) return;
+    Alert.alert('Delete document', `Delete "${document.title}"? This cannot be undone.`, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            await deleteLeaseDocument(document.id);
+            router.back();
+          } catch (error) {
+            console.error('Error deleting lease document:', error);
+            Alert.alert('Delete failed', 'Could not delete this document. Please try again.');
+          }
+        },
+      },
+    ]);
+  };
+
+  const handleExport = async () => {
+    if (!document || isExporting) return;
+    try {
+      setIsExporting(true);
+      await exportLeaseDocument(document.id);
+    } catch (error) {
+      console.error('Error exporting lease document:', error);
+      Alert.alert('Export failed', 'Could not export this document. Please try again.');
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
   const isImageFile = (uri?: string) => {
     if (!uri) return false;
     const clean = uri.split('?')[0].split('#')[0].toLowerCase();

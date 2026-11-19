@@ -1,0 +1,20 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Build fixed standalone APK",
+			"type": "shell",
+			"command": "android\\gradlew.bat",
+			"args": [
+				"-p",
+				"android",
+				"assembleRelease",
+				"--console=plain",
+				"--no-daemon"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		}
+	]
+}

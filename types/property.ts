@@ -122,6 +122,24 @@ export interface Reminder {
   recipientEmail?: string;
 }
 
+export type MaintenanceResponsibility = 'owner' | 'tenant' | 'shared' | 'other';
+
+export interface MaintenanceLogEntry {
+  id: string;
+  propertyId: string;
+  issue: string;
+  dateNotified: string;
+  dateRepaired?: string;
+  cost?: number;
+  responsibility: MaintenanceResponsibility;
+  followUpNeeded: boolean;
+  followUpDetails?: string;
+  equipmentTags: string[];
+  notes?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface PropertyPhoto {
   id: string;
   propertyId: string;

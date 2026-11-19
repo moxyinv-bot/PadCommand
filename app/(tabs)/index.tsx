@@ -12,7 +12,7 @@ import {
 } from "react-native";
 import { router } from "expo-router";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { Plus, TrendingUp, TrendingDown, Home, AlertCircle, DollarSign, ArrowDownUp, Check, GripVertical, X } from "lucide-react-native";
+import { Plus, TrendingUp, TrendingDown, Home, AlertCircle, DollarSign, ArrowDownUp, Check, GripVertical, X, FileSpreadsheet } from "lucide-react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { usePortfolio } from "@/hooks/portfolio-store";
 import { useHousehold } from "@/hooks/useHousehold";
@@ -259,6 +259,10 @@ export default function DashboardScreen() {
         <View style={styles.sectionHeader}>
           <Text style={styles.sectionTitle}>Properties</Text>
           <View style={styles.propertyActions}>
+            <TouchableOpacity style={styles.importButton} onPress={() => router.push('/property-import' as any)}>
+              <FileSpreadsheet size={17} color="#3B82F6" />
+              <Text style={styles.importButtonText}>Import / Export</Text>
+            </TouchableOpacity>
             <TouchableOpacity style={styles.sortButton} onPress={() => setShowSortModal(true)}>
               <ArrowDownUp size={17} color="#3B82F6" />
               <Text style={styles.sortButtonText}>Sort</Text>
@@ -568,6 +572,22 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
+  },
+  importButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1,
+    borderColor: "#BFDBFE",
+    paddingHorizontal: 8,
+    paddingVertical: 7,
+    borderRadius: 8,
+    gap: 4,
+  },
+  importButtonText: {
+    color: "#2563EB",
+    fontSize: 12,
+    fontWeight: "600" as const,
   },
   sortButton: {
     flexDirection: "row",
