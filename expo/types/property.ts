@@ -18,6 +18,34 @@ export interface PaintColor {
   notes?: string;
 }
 
+export interface CustomPropertyField {
+  id: string;
+  label: string;
+  value: string;
+}
+
+export interface ContactPhoneNumber {
+  id: string;
+  label: string;
+  number: string;
+}
+
+export type ContactCategory = 'contractor' | 'insurance' | 'tenant' | 'buyer-seller' | 'lead' | 'other';
+
+export interface PortfolioContact {
+  id: string;
+  name: string;
+  category: ContactCategory;
+  phoneNumbers: ContactPhoneNumber[];
+  company?: string;
+  email?: string;
+  address?: string;
+  tags: string[];
+  notes?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
 export interface Property {
   id: string;
   name: string;
@@ -26,6 +54,7 @@ export interface Property {
   purchaseDate: string;
   purchasePrice: number;
   currentValue?: number;
+  squareFootage?: number;
   monthlyRent: number;
   tenantName?: string;
   tenantContact?: string;
@@ -39,6 +68,7 @@ export interface Property {
   insuranceRenewalDate?: string;
   insurancePremium?: number;
   propertyTax?: number;
+  propertyTaxDueDate?: string;
   appliances: Appliance[];
   paintColors: PaintColor[];
   acCapacitorSize?: string;
@@ -49,6 +79,9 @@ export interface Property {
   applianceInfo?: string;
   notes?: string;
   imageUri?: string;
+  backgroundColor?: string;
+  customFields?: CustomPropertyField[];
+  displayOrder?: number;
 }
 
 export interface Transaction {
@@ -60,6 +93,7 @@ export interface Transaction {
   date: string;
   description: string;
   receiptUri?: string;
+  receiptName?: string;
   tags: string[];
 }
 
@@ -88,12 +122,30 @@ export interface Reminder {
   recipientEmail?: string;
 }
 
+export type MaintenanceResponsibility = 'owner' | 'tenant' | 'shared' | 'other';
+
+export interface MaintenanceLogEntry {
+  id: string;
+  propertyId: string;
+  issue: string;
+  dateNotified: string;
+  dateRepaired?: string;
+  cost?: number;
+  responsibility: MaintenanceResponsibility;
+  followUpNeeded: boolean;
+  followUpDetails?: string;
+  equipmentTags: string[];
+  notes?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface PropertyPhoto {
   id: string;
   propertyId: string;
   uri: string;
   caption: string;
-  date: string;
+  date?: string;
 }
 
 export interface LeaseFolder {

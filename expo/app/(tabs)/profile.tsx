@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   StyleSheet,
   Text,
@@ -10,10 +10,14 @@ import {
   Modal,
   TextInput,
   Share,
+  Platform,
+  Linking,
 } from "react-native";
+import Constants from "expo-constants";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useAuth } from "@/hooks/useAuth";
 import { useHousehold } from "@/hooks/useHousehold";
+import { supabase } from "@/lib/supabase";
 import {
   User,
   LogOut,
@@ -25,6 +29,9 @@ import {
   Mail,
   ChevronRight,
   Home,
+  CheckCircle,
+  AlertCircle,
+  Info,
 } from "lucide-react-native";
 
 export default function ProfileScreen() {
@@ -46,6 +53,73 @@ export default function ProfileScreen() {
   const [householdName, setHouseholdName] = useState("");
   const [inviteCode, setInviteCode] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
+  const [latestRelease, setLatestRelease] = useState<{
+    version_name: string;
+    version_code: number;
+    minimum_supported_code: number;
+  } | null>(null);
+  const [versionCheckFailed, setVersionCheckFailed] = useState(false);
+
+  const installedVersion = Constants.expoConfig?.version ?? "unknown";
+  const installedBuild = Constants.expoConfig?.android?.versionCode ?? 0;
+  const updateAvailable = latestRelease ? installedBuild < latestRelease.version_code : false;
+  const unsupportedBuild = latestRelease ? installedBuild < latestRelease.minimum_supported_code : false;
+
+  useEffect(() => {
+    let active = true;
+
+    const loadReleaseStatus = async () => {
+      const { data, error: releaseError } = await supabase
+        .from('app_releases')
+        .select('version_name, version_code, minimum_supported_code')
+        .eq('platform', Platform.OS)
+        .maybeSingle();
+
+      if (!active) return;
+      if (releaseError) {
+        setVersionCheckFailed(true);
+        return;
+      }
+
+      setLatestRelease(data);
+      setVersionCheckFailed(false);
+    };
+
+    void loadReleaseStatus();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const memberDisplayName = (member: (typeof members)[number]) => {
+    const explicitName = member.profile?.name?.trim();
+    if (explicitName) return explicitName;
+
+    const email = member.profile?.email?.trim();
+    if (email) {
+      const localPart = email.split("@")[0]?.trim();
+      if (localPart) return localPart;
+    }
+
+    if (member.user_id === "guest" || member.user_id.startsWith("guest_")) {
+      return "Guest Member";
+    }
+
+    if (member.user_id.startsWith("usr_")) {
+      return "Household Member";
+    }
+
+    return "Member";
+  };
+
+  const memberSecondaryText = (member: (typeof members)[number]) => {
+    const email = member.profile?.email?.trim();
+    if (email) return email;
+    if (member.user_id === "guest" || member.user_id.startsWith("guest_")) {
+      return "Guest account";
+    }
+    return "No email shared";
+  };
 
   const handleCreateHousehold = async () => {
     if (!householdName.trim()) return;
@@ -73,7 +147,7 @@ export default function ProfileScreen() {
     if (!household) return;
     try {
       await Share.share({
-        message: `Join my rental portfolio on Rental Portfolio Assistant! Use invite code: ${household.invite_code}`,
+        message: `Join my PadCommand household. Open PadCommand, sign in, and enter invite code ${household.invite_code}.`,
       });
     } catch (err) {
       console.error("Share failed:", err);
@@ -116,6 +190,28 @@ export default function ProfileScreen() {
     Share.share({ message: household.invite_code }).catch(() => {});
   };
 
+  const handleSwitchAccount = () => {
+    Alert.alert(
+      "Switch Account",
+      "Sign out of this account so you can log in with a different one.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Switch Account",
+          style: "destructive",
+          onPress: () => signOut(),
+        },
+      ]
+    );
+  };
+
+  const contactBuilder = () => {
+    const emailUrl = "mailto:moxyinv@gmail.com?subject=PadCommand%20question%20or%20suggestion";
+    Linking.openURL(emailUrl).catch(() => {
+      Alert.alert("Email unavailable", "Please email moxyinv@gmail.com with your question or suggestion.");
+    });
+  };
+
   if (isLoading) {
     return (
       <SafeAreaView style={styles.container} edges={["top"]}>
@@ -150,7 +246,9 @@ export default function ProfileScreen() {
             )}
           </View>
           <Text style={styles.userName}>{user?.name || "User"}</Text>
-          <Text style={styles.userEmail}>{user?.email}</Text>
+          <Text style={styles.userEmail}>
+            {user?.email}
+          </Text>
         </View>
 
         {error && (
@@ -204,21 +302,25 @@ export default function ProfileScreen() {
 
             {/* Members List */}
             <Text style={styles.subsectionTitle}>Members</Text>
-            {members.map((member) => (
+            {members.map((member) => {
+              const displayName = memberDisplayName(member);
+              const secondaryText = memberSecondaryText(member);
+
+              return (
               <View key={member.id} style={styles.memberCard}>
                 <View style={styles.memberAvatar}>
                   <Text style={styles.memberAvatarText}>
-                    {(member.profile?.name || member.profile?.email || "?")
+                    {(displayName || "?")
                       .charAt(0)
                       .toUpperCase()}
                   </Text>
                 </View>
                 <View style={styles.memberInfo}>
                   <Text style={styles.memberName}>
-                    {member.profile?.name || "Unknown"}
+                    {displayName}
                   </Text>
                   <Text style={styles.memberEmail}>
-                    {member.profile?.email}
+                    {secondaryText}
                   </Text>
                 </View>
                 {member.role === "owner" ? (
@@ -231,7 +333,7 @@ export default function ProfileScreen() {
                     onPress={() =>
                       handleRemoveMember(
                         member.id,
-                        member.profile?.name || "this member"
+                        displayName || "this member"
                       )
                     }
                     style={styles.removeButton}
@@ -240,7 +342,7 @@ export default function ProfileScreen() {
                   </TouchableOpacity>
                 )}
               </View>
-            ))}
+            )})}
 
             <TouchableOpacity
               style={styles.leaveButton}
@@ -253,11 +355,10 @@ export default function ProfileScreen() {
           </View>
         ) : (
           <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Set Up Sharing</Text>
+            <Text style={styles.sectionTitle}>Set Up PadCommand</Text>
             <Text style={styles.sectionDescription}>
-              Create a household to share your rental portfolio with family members or
-              partners. Everyone you invite will see the same properties and can make
-              changes that sync across all devices.
+              Create a new household for the properties you manage, or join an existing
+              household with a six-character invite code.
             </Text>
 
             <TouchableOpacity
@@ -280,6 +381,55 @@ export default function ProfileScreen() {
           </View>
         )}
 
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>App Version</Text>
+          <View style={styles.versionCard}>
+            <View style={styles.versionHeader}>
+              <Info size={20} color="#3B82F6" />
+              <View style={styles.versionDetails}>
+                <Text style={styles.versionName}>PadCommand {installedVersion}</Text>
+                <Text style={styles.versionBuild}>Build {installedBuild || "unknown"}</Text>
+              </View>
+            </View>
+
+            {latestRelease ? (
+              <View style={[
+                styles.versionStatus,
+                updateAvailable ? styles.versionStatusWarning : styles.versionStatusCurrent,
+              ]}>
+                {updateAvailable ? (
+                  <AlertCircle size={18} color="#B45309" />
+                ) : (
+                  <CheckCircle size={18} color="#15803D" />
+                )}
+                <View style={styles.versionStatusText}>
+                  <Text style={updateAvailable ? styles.versionWarningText : styles.versionCurrentText}>
+                    {unsupportedBuild ? "Update required" : updateAvailable ? "Update available" : "Up to date"}
+                  </Text>
+                  <Text style={styles.latestVersionText}>
+                    Latest: {latestRelease.version_name} (build {latestRelease.version_code})
+                  </Text>
+                </View>
+              </View>
+            ) : (
+              <Text style={styles.versionUnavailableText}>
+                {versionCheckFailed ? "Latest-version check unavailable" : "Checking latest version..."}
+              </Text>
+            )}
+
+            <TouchableOpacity style={styles.contactBuilderButton} onPress={contactBuilder} activeOpacity={0.7}>
+              <View style={styles.contactBuilderIcon}>
+                <Mail size={18} color="#2563EB" />
+              </View>
+              <View style={styles.contactBuilderTextContainer}>
+                <Text style={styles.contactBuilderTitle}>Questions or suggestions?</Text>
+                <Text style={styles.contactBuilderEmail}>moxyinv@gmail.com</Text>
+              </View>
+              <ChevronRight size={18} color="#9CA3AF" />
+            </TouchableOpacity>
+          </View>
+        </View>
+
         {/* Sign Out */}
         <View style={styles.section}>
           <TouchableOpacity
@@ -289,6 +439,15 @@ export default function ProfileScreen() {
           >
             <LogOut size={20} color="#EF4444" />
             <Text style={styles.signOutText}>Sign Out</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.switchAccountButton}
+            onPress={handleSwitchAccount}
+            activeOpacity={0.7}
+          >
+            <User size={20} color="#3B82F6" />
+            <Text style={styles.switchAccountText}>Switch Account</Text>
           </TouchableOpacity>
         </View>
       </ScrollView>
@@ -304,7 +463,7 @@ export default function ProfileScreen() {
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>Create Household</Text>
             <Text style={styles.modalDescription}>
-              Give your household a name — this helps identify your shared portfolio.
+              Choose a recognizable name for your shared PadCommand workspace.
             </Text>
             <TextInput
               style={styles.modalInput}
@@ -354,7 +513,8 @@ export default function ProfileScreen() {
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>Join Household</Text>
             <Text style={styles.modalDescription}>
-              Enter the 6-character invite code shared by a household member.
+              Sign in with your own Google account, then enter the six-character code
+              shared by a household member.
             </Text>
             <TextInput
               style={styles.modalInput}
@@ -668,6 +828,96 @@ const styles = StyleSheet.create({
     color: "#3B82F6",
     fontWeight: "600" as const,
   },
+  versionCard: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 12,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+  },
+  versionHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  versionDetails: {
+    flex: 1,
+  },
+  versionName: {
+    fontSize: 16,
+    fontWeight: "600" as const,
+    color: "#111827",
+  },
+  versionBuild: {
+    fontSize: 13,
+    color: "#6B7280",
+    marginTop: 2,
+  },
+  versionStatus: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    marginTop: 14,
+    padding: 12,
+    borderRadius: 8,
+  },
+  versionStatusCurrent: {
+    backgroundColor: "#F0FDF4",
+  },
+  versionStatusWarning: {
+    backgroundColor: "#FFFBEB",
+  },
+  versionStatusText: {
+    flex: 1,
+  },
+  versionCurrentText: {
+    color: "#15803D",
+    fontWeight: "600" as const,
+  },
+  versionWarningText: {
+    color: "#B45309",
+    fontWeight: "600" as const,
+  },
+  latestVersionText: {
+    color: "#6B7280",
+    fontSize: 12,
+    marginTop: 2,
+  },
+  versionUnavailableText: {
+    color: "#6B7280",
+    fontSize: 13,
+    marginTop: 12,
+  },
+  contactBuilderButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: 14,
+    paddingTop: 14,
+    borderTopWidth: 1,
+    borderTopColor: "#E5E7EB",
+  },
+  contactBuilderIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 8,
+    backgroundColor: "#EFF6FF",
+    justifyContent: "center",
+    alignItems: "center",
+    marginRight: 10,
+  },
+  contactBuilderTextContainer: {
+    flex: 1,
+  },
+  contactBuilderTitle: {
+    color: "#111827",
+    fontSize: 14,
+    fontWeight: "600" as const,
+  },
+  contactBuilderEmail: {
+    color: "#2563EB",
+    fontSize: 13,
+    marginTop: 2,
+  },
   signOutButton: {
     flexDirection: "row",
     alignItems: "center",
@@ -683,6 +933,24 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: "#EF4444",
     fontWeight: "500" as const,
+  },
+  switchAccountButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    backgroundColor: "#EFF6FF",
+    borderWidth: 1,
+    borderColor: "#BFDBFE",
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    marginTop: 12,
+  },
+  switchAccountText: {
+    color: "#2563EB",
+    fontSize: 16,
+    fontWeight: "600" as const,
   },
   modalOverlay: {
     flex: 1,

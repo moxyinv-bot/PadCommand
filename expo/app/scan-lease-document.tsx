@@ -8,7 +8,8 @@ import {
   ActivityIndicator,
   Platform,
   ScrollView,
-  TextInput
+  TextInput,
+  KeyboardAvoidingView
 } from 'react-native';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { Stack, router } from 'expo-router';
@@ -47,6 +48,7 @@ export default function ScanLeaseDocumentScreen() {
   const [capturedImage, setCapturedImage] = useState<string | null>(null);
   const [extractedText, setExtractedText] = useState('');
   const [isExtracting, setIsExtracting] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
 
   const [title, setTitle] = useState('');
   const [selectedProperty, setSelectedProperty] = useState('');
@@ -71,9 +73,9 @@ export default function ScanLeaseDocumentScreen() {
       }
 
       const result = await ImagePicker.launchCameraAsync({
-        allowsEditing: true,
-        aspect: [4, 3],
-        quality: 0.8,
+        allowsEditing: false,
+        quality: 0.65,
+        exif: false,
       });
 
       if (!result.canceled && result.assets[0]) {
@@ -90,9 +92,9 @@ export default function ScanLeaseDocumentScreen() {
     try {
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ['images'],
-        allowsEditing: true,
-        aspect: [4, 3],
-        quality: 0.8,
+        allowsEditing: false,
+        quality: 0.65,
+        exif: false,
       });
 
       if (!result.canceled && result.assets[0]) {
@@ -154,8 +156,8 @@ export default function ScanLeaseDocumentScreen() {
         createdAt: new Date().toISOString()
       };
 
-      await addLeaseFolder(folder);
-      setSelectedFolder(folder.id);
+      const savedFolder = await addLeaseFolder(folder);
+      setSelectedFolder(savedFolder.id);
       setShowCreateFolderModal(false);
       setNewFolderName('');
     } catch (error) {
@@ -181,6 +183,7 @@ export default function ScanLeaseDocumentScreen() {
     }
 
     try {
+      setIsSaving(true);
       const document: LeaseDocument = {
         id: Date.now().toString(),
         folderId: selectedFolder,
@@ -197,7 +200,10 @@ export default function ScanLeaseDocumentScreen() {
         notes: notes.trim() || undefined
       };
 
-      await addLeaseDocument(document);
+      const savedDocument = await addLeaseDocument(document);
+      if (!savedDocument?.id) {
+        throw new Error('Document save did not return a valid record.');
+      }
 
       Alert.alert(
         'Success',
@@ -211,7 +217,10 @@ export default function ScanLeaseDocumentScreen() {
       );
     } catch (error) {
       console.error('Error saving document:', error);
-      Alert.alert('Error', 'Failed to save document. Please try again.');
+      const message = error instanceof Error ? error.message : 'Failed to save document. Please try again.';
+      Alert.alert('Error', message);
+    } finally {
+      setIsSaving(false);
     }
   };
 
@@ -224,18 +233,24 @@ export default function ScanLeaseDocumentScreen() {
             <TouchableOpacity
               style={styles.saveButton}
               onPress={handleSave}
-              disabled={!title.trim() || !selectedProperty || !selectedFolder}
+              disabled={isSaving || !title.trim() || !selectedProperty || !selectedFolder}
             >
-              <Check size={20} color={!title.trim() || !selectedProperty || !selectedFolder ? '#9CA3AF' : '#3B82F6'} />
+              <Check size={20} color={isSaving || !title.trim() || !selectedProperty || !selectedFolder ? '#9CA3AF' : '#3B82F6'} />
             </TouchableOpacity>
           )
         }}
       />
 
+      <KeyboardAvoidingView
+        behavior="padding"
+        keyboardVerticalOffset={Platform.OS === "ios" ? 90 : 64}
+        style={{ flex: 1 }}
+      >
       <ScrollView 
         style={styles.content} 
         contentContainerStyle={{ paddingBottom: 16 }}
         showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
       >
         {!capturedImage ? (
           <View style={styles.captureSection}>
@@ -275,9 +290,18 @@ export default function ScanLeaseDocumentScreen() {
                 <Text style={styles.extractedTextLabel}>Extracted Text:</Text>
                 <ScrollView style={styles.extractedTextScroll} nestedScrollEnabled>
                   <Text style={styles.extractedText}>
-                    {extractedText || 'No text could be extracted from the image.'}
+                    {extractedText || 'Text extraction has not run yet. You can save the document manually or extract text now.'}
                   </Text>
                 </ScrollView>
+                {capturedImage && !extractedText ? (
+                  <TouchableOpacity
+                    style={styles.extractButton}
+                    onPress={() => handleExtractText(capturedImage)}
+                    disabled={isExtracting}
+                  >
+                    <Text style={styles.extractButtonText}>Extract Text</Text>
+                  </TouchableOpacity>
+                ) : null}
                 <TouchableOpacity
                   style={styles.retakeButton}
                   onPress={() => {
@@ -469,6 +493,7 @@ export default function ScanLeaseDocumentScreen() {
           </View>
         </View>
       </ScrollView>
+      </KeyboardAvoidingView>
 
       {showDatePicker && (
         <DateTimePicker
@@ -645,6 +670,19 @@ const styles = StyleSheet.create({
   retakeButtonText: {
     fontSize: 14,
     color: '#6B7280',
+    fontWeight: '500' as const,
+  },
+  extractButton: {
+    alignSelf: 'flex-start',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    backgroundColor: '#3B82F6',
+    borderRadius: 6,
+    marginBottom: 8,
+  },
+  extractButtonText: {
+    fontSize: 14,
+    color: 'white',
     fontWeight: '500' as const,
   },
   formSection: {

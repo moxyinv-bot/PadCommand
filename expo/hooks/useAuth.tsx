@@ -1,34 +1,8 @@
-import { createContext, useContext, useEffect, useRef, useState, useCallback, type ReactNode } from "react";
-import { Platform } from "react-native";
+import { createContext, useContext, useEffect, useState, useCallback, type ReactNode } from "react";
 import * as WebBrowser from "expo-web-browser";
 import * as Linking from "expo-linking";
-import * as SecureStore from "expo-secure-store";
 import { supabase } from "@/lib/supabase";
-
-// Baked-in Rork platform configuration so standalone builds (EAS APKs) work
-// without any environment variables. These are public client values — they
-// ship inside every app bundle by design.
-const AUTH_URL = "https://api.rork.com";
-const APP_KEY = "rpk_gms3l8hj9cag5cfau127pccgjtac3jne";
-const PROJECT_ID = "7qnyyg8myr2908b1ajb2f";
-
-function generateCodeVerifier(): string {
-  const bytes = new Uint8Array(32);
-  crypto.getRandomValues(bytes);
-  return btoa(String.fromCharCode(...bytes))
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
-}
-
-async function generateCodeChallenge(verifier: string): Promise<string> {
-  const data = new TextEncoder().encode(verifier);
-  const hash = await crypto.subtle.digest("SHA-256", data);
-  return btoa(String.fromCharCode(...new Uint8Array(hash)))
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
-}
+WebBrowser.maybeCompleteAuthSession();
 
 export interface AuthUser {
   id: string;
@@ -37,37 +11,19 @@ export interface AuthUser {
   picture?: string;
 }
 
-function userFromToken(token: string): AuthUser | null {
-  try {
-    const parts = token.split(".");
-    if (parts.length !== 3) return null;
-
-    const base64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
-    const payload = JSON.parse(atob(base64));
-
-    if (payload.exp && payload.exp * 1000 < Date.now()) {
-      return null;
-    }
-
-    return {
-      id: payload.sub,
-      email: payload.email ?? "",
-      name: payload.name,
-      picture: payload.picture,
-    };
-  } catch {
-    return null;
-  }
-}
-
 interface AuthContextType {
   user: AuthUser | null;
   isLoading: boolean;
   isSigningIn: boolean;
   error: string | null;
+  message: string | null;
   signIn: (provider: "google" | "apple") => Promise<void>;
+  signInWithEmail: (email: string, password: string) => Promise<void>;
+  signUpWithEmail: (email: string, password: string) => Promise<void>;
+  resetPassword: (email: string) => Promise<void>;
   signOut: () => Promise<void>;
   clearError: () => void;
+  clearMessage: () => void;
 }
 
 const AuthContext = createContext<AuthContextType | null>(null);
@@ -77,47 +33,50 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [isLoading, setIsLoading] = useState(true);
   const [isSigningIn, setIsSigningIn] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const codeVerifierRef = useRef<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
 
   const clearError = useCallback(() => setError(null), []);
+  const clearMessage = useCallback(() => setMessage(null), []);
 
   useEffect(() => {
     checkAuth();
   }, []);
 
-  useEffect(() => {
-    const subscription = Linking.addEventListener("url", handleDeepLink);
-    return () => subscription.remove();
-  }, []);
-
   async function checkAuth() {
     try {
-      const accessToken = Platform.OS === "web"
-        ? localStorage.getItem("access_token")
-        : await SecureStore.getItemAsync("access_token");
-
-      if (!accessToken) {
-        const refreshTokenStored = Platform.OS === "web"
-          ? localStorage.getItem("refresh_token")
-          : await SecureStore.getItemAsync("refresh_token");
-        if (refreshTokenStored) {
-          await refreshToken();
-        }
-        return;
-      }
-
-      const decoded = userFromToken(accessToken);
-      if (decoded) {
-        setUser(decoded);
-        await syncProfile(decoded);
-      } else {
-        await refreshToken();
-      }
+      const { data, error: sessionError } = await supabase.auth.getSession();
+      if (sessionError) throw sessionError;
+      await setSessionUser(data.session?.user ?? null);
     } catch (err) {
       console.error("Auth check failed:", err);
     } finally {
       setIsLoading(false);
     }
+  }
+
+  useEffect(() => {
+    const { data: subscription } = supabase.auth.onAuthStateChange((_event, session) => {
+      void setSessionUser(session?.user ?? null);
+    });
+
+    return () => subscription.subscription.unsubscribe();
+  }, []);
+
+  async function setSessionUser(sessionUser: { id: string; email?: string; user_metadata?: Record<string, unknown> } | null) {
+    if (!sessionUser) {
+      setUser(null);
+      return;
+    }
+
+    const metadata = sessionUser.user_metadata ?? {};
+    const nextUser: AuthUser = {
+      id: sessionUser.id,
+      email: sessionUser.email ?? "",
+      name: typeof metadata.full_name === "string" ? metadata.full_name : typeof metadata.name === "string" ? metadata.name : undefined,
+      picture: typeof metadata.avatar_url === "string" ? metadata.avatar_url : typeof metadata.picture === "string" ? metadata.picture : undefined,
+    };
+    setUser(nextUser);
+    await syncProfile(nextUser);
   }
 
   async function syncProfile(userData: AuthUser) {
@@ -134,86 +93,47 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  async function handleDeepLink(event: { url: string }) {
-    try {
-      const url = new URL(event.url);
-      if (url.pathname === "/auth/callback") {
-        const code = url.searchParams.get("code");
-        if (code) {
-          await exchangeCode(code);
-        }
-      }
-    } catch (err) {
-      console.error("Deep link handling failed:", err);
-      setError(err instanceof Error ? err.message : "Sign in failed");
-    }
-  }
-
   async function signIn(provider: "google" | "apple") {
     setIsSigningIn(true);
     setError(null);
+    setMessage(null);
     try {
-      const verifier = generateCodeVerifier();
-      const challenge = await generateCodeChallenge(verifier);
-      codeVerifierRef.current = verifier;
-
-      const isWeb = Platform.OS === "web";
-      const target = "rn";
-      const env = isWeb ? "preview" : "native";
-
-      const response = await fetch(`${AUTH_URL}/oauth/initiate`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ app_key: APP_KEY, provider, code_challenge: challenge, target, env }),
+      const redirectTo = Linking.createURL("auth/callback");
+      const { data, error: oauthError } = await supabase.auth.signInWithOAuth({
+        provider,
+        options: { redirectTo, skipBrowserRedirect: true },
       });
+      if (oauthError) throw oauthError;
+      if (!data.url) throw new Error("No sign-in URL was returned.");
 
-      if (!response.ok) {
-        codeVerifierRef.current = null;
-        const body = await response.json().catch(() => ({}));
-        const message = body.error || `Sign in failed (${response.status})`;
-        console.error(`Auth initiate failed (${response.status}):`, body);
-        setError(message);
-        return;
-      }
-
-      const { auth_url } = await response.json();
-
-      if (isWeb) {
-        const popup = window.open(auth_url, "_blank", "width=500,height=650");
-
-        await new Promise<void>((resolve, reject) => {
-          const onMessage = (event: MessageEvent) => {
-            if (event.data?.type !== "rork_auth_callback") return;
-            window.removeEventListener("message", onMessage);
-            clearInterval(pollTimer);
-            const code = event.data.code;
-            if (code) {
-              exchangeCode(code).then(resolve, reject);
-            } else {
-              reject(new Error("No code received"));
-            }
-          };
-          window.addEventListener("message", onMessage);
-
-          const pollTimer = setInterval(() => {
-            if (popup?.closed) {
-              clearInterval(pollTimer);
-              window.removeEventListener("message", onMessage);
-              codeVerifierRef.current = null;
-              resolve();
-            }
-          }, 500);
-        });
-      } else {
-        const result = await WebBrowser.openAuthSessionAsync(auth_url, `rork-${PROJECT_ID}://auth/callback`);
-
-        if (result.type === "success") {
-          const url = new URL(result.url);
-          const code = url.searchParams.get("code");
-          if (code) {
-            await exchangeCode(code);
-          }
+      const result = await WebBrowser.openAuthSessionAsync(data.url, redirectTo);
+      if (result.type === "success") {
+        const callbackUrl = new URL(result.url);
+        const code = callbackUrl.searchParams.get("code");
+        if (code) {
+          const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(code);
+          if (exchangeError) throw exchangeError;
+          return;
         }
+
+        // Older/implicit Supabase callbacks return tokens in the URL fragment.
+        const fragment = new URLSearchParams(callbackUrl.hash.replace(/^#/, ""));
+        const callbackError = callbackUrl.searchParams.get("error_description")
+          ?? fragment.get("error_description");
+        if (callbackError) throw new Error(callbackError);
+
+        const accessToken = fragment.get("access_token");
+        const refreshToken = fragment.get("refresh_token");
+        if (accessToken && refreshToken) {
+          const { error: sessionError } = await supabase.auth.setSession({
+            access_token: accessToken,
+            refresh_token: refreshToken,
+          });
+          if (sessionError) throw sessionError;
+          return;
+        }
+
+        throw new Error("Google sign-in returned without a usable session. Please try again.");
       }
     } catch (err) {
       console.error("Sign in failed:", err);
@@ -223,88 +143,111 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  async function exchangeCode(code: string) {
-    const verifier = codeVerifierRef.current;
-    if (!verifier) return;
-    codeVerifierRef.current = null;
+  async function signInWithEmail(email: string, password: string) {
+    setIsSigningIn(true);
+    setError(null);
+    setMessage(null);
 
-    const response = await fetch(`${AUTH_URL}/oauth/token`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ app_key: APP_KEY, code, code_verifier: verifier }),
-    });
+    try {
+      const cleanedEmail = email.trim();
+      if (!cleanedEmail || !password) {
+        throw new Error("Email and password are required.");
+      }
 
-    if (!response.ok) {
-      const body = await response.json().catch(() => ({}));
-      const message = body.error || `Token exchange failed (${response.status})`;
-      console.error(`Token exchange failed (${response.status}):`, body);
-      setError(message);
-      return;
+      const { error: signInError } = await supabase.auth.signInWithPassword({
+        email: cleanedEmail,
+        password,
+      });
+
+      if (signInError) throw signInError;
+    } catch (err) {
+      console.error("Email sign in failed:", err);
+      setError(err instanceof Error ? err.message : "Email sign in failed");
+    } finally {
+      setIsSigningIn(false);
     }
-
-    const { access_token, refresh_token, user: userData } = await response.json();
-
-    if (Platform.OS === "web") {
-      localStorage.setItem("access_token", access_token);
-      localStorage.setItem("refresh_token", refresh_token);
-    } else {
-      await SecureStore.setItemAsync("access_token", access_token);
-      await SecureStore.setItemAsync("refresh_token", refresh_token);
-    }
-
-    setUser(userData);
-    await syncProfile(userData);
   }
 
-  async function refreshToken() {
-    const storedRefreshToken = Platform.OS === "web"
-      ? localStorage.getItem("refresh_token")
-      : await SecureStore.getItemAsync("refresh_token");
+  async function signUpWithEmail(email: string, password: string) {
+    setIsSigningIn(true);
+    setError(null);
+    setMessage(null);
 
-    if (!storedRefreshToken) {
-      setUser(null);
-      return;
+    try {
+      const cleanedEmail = email.trim();
+      if (!cleanedEmail || !password) {
+        throw new Error("Email and password are required.");
+      }
+
+      const redirectTo = Linking.createURL("auth/callback");
+      const { data, error: signUpError } = await supabase.auth.signUp({
+        email: cleanedEmail,
+        password,
+        options: {
+          emailRedirectTo: redirectTo,
+        },
+      });
+
+      if (signUpError) throw signUpError;
+      if (!data.user) {
+        throw new Error("Account could not be created.");
+      }
+
+      setMessage("Account created. Check your email for a verification link before signing in.");
+    } catch (err) {
+      console.error("Email sign up failed:", err);
+      setError(err instanceof Error ? err.message : "Email sign up failed");
+    } finally {
+      setIsSigningIn(false);
     }
+  }
 
-    const response = await fetch(`${AUTH_URL}/oauth/refresh`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ app_key: APP_KEY, refresh_token: storedRefreshToken }),
-    });
+  async function resetPassword(email: string) {
+    setIsSigningIn(true);
+    setError(null);
+    setMessage(null);
 
-    if (!response.ok) {
-      await signOut();
-      return;
-    }
+    try {
+      const cleanedEmail = email.trim();
+      if (!cleanedEmail) {
+        throw new Error("Enter an email address to reset your password.");
+      }
 
-    const { access_token } = await response.json();
+      const redirectTo = Linking.createURL("auth/callback");
+      const { error: resetError } = await supabase.auth.resetPasswordForEmail(cleanedEmail, {
+        redirectTo,
+      });
 
-    if (Platform.OS === "web") {
-      localStorage.setItem("access_token", access_token);
-    } else {
-      await SecureStore.setItemAsync("access_token", access_token);
-    }
-
-    const decoded = userFromToken(access_token);
-    if (decoded) {
-      setUser(decoded);
-      await syncProfile(decoded);
+      if (resetError) throw resetError;
+      setMessage("Password reset email sent. Check your inbox and follow the link to continue.");
+    } catch (err) {
+      console.error("Password reset failed:", err);
+      setError(err instanceof Error ? err.message : "Password reset failed");
+    } finally {
+      setIsSigningIn(false);
     }
   }
 
   async function signOut() {
-    if (Platform.OS === "web") {
-      localStorage.removeItem("access_token");
-      localStorage.removeItem("refresh_token");
-    } else {
-      await SecureStore.deleteItemAsync("access_token");
-      await SecureStore.deleteItemAsync("refresh_token");
-    }
-    setUser(null);
+    const { error: signOutError } = await supabase.auth.signOut();
+    if (signOutError) throw signOutError;
   }
 
   return (
-    <AuthContext.Provider value={{ user, isLoading, isSigningIn, error, signIn, signOut, clearError }}>
+    <AuthContext.Provider value={{
+      user,
+      isLoading,
+      isSigningIn,
+      error,
+      message,
+      signIn,
+      signInWithEmail,
+      signUpWithEmail,
+      resetPassword,
+      signOut,
+      clearError,
+      clearMessage,
+    }}>
       {children}
     </AuthContext.Provider>
   );

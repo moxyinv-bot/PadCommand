@@ -9,28 +9,60 @@ import {
   KeyboardAvoidingView,
   Platform,
   Alert,
+  Keyboard,
 } from "react-native";
 import { router, useLocalSearchParams } from "expo-router";
-import { usePortfolio } from "@/hooks/portfolio-store";
-import { Property } from "@/types/property";
-import { PROPERTY_TYPES } from "@/constants/categories";
+import { usePortfolio, parseTransactionDate } from "@/hooks/portfolio-store";
+import { CustomPropertyField, Property } from "@/types/property";
+import { PROPERTY_TYPES, PROPERTY_BACKGROUND_COLORS } from "@/constants/categories";
 import * as ImagePicker from "expo-image-picker";
-import { Camera } from "lucide-react-native";
+import { Camera, Calendar as CalendarIcon, Plus, Trash2 } from "lucide-react-native";
+import DateTimePicker from '@react-native-community/datetimepicker';
 import { SafeAreaView } from "react-native-safe-area-context";
+import { toStoredDate, formatDisplayDate } from "@/lib/dates";
+
+const MAX_CUSTOM_FIELDS = 10;
+type PropertyDateField = "purchaseDate" | "mortgageRenewalDate" | "insuranceRenewalDate" | "leaseStart" | "leaseEnd" | "propertyTaxDueDate";
+
+const createCustomField = (): CustomPropertyField => ({
+  id: `custom_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+  label: "",
+  value: "",
+});
+
+const cleanCustomFields = (fields: CustomPropertyField[]): CustomPropertyField[] =>
+  fields
+    .map(field => ({ ...field, label: field.label.trim(), value: field.value.trim() }))
+    .filter(field => field.label && field.value)
+    .slice(0, MAX_CUSTOM_FIELDS);
 
 export default function EditPropertyScreen() {
   const { id } = useLocalSearchParams();
-  const { properties, updateProperty } = usePortfolio();
-  
+  const { properties, updateProperty, addReminder } = usePortfolio();
+  const [isSaving, setIsSaving] = useState(false);
+  const [keyboardOffset, setKeyboardOffset] = useState(0);
+  const [showDatePicker, setShowDatePicker] = useState(false);
+  const [activeDateField, setActiveDateField] = useState<PropertyDateField>("purchaseDate");
+  const [selectedDate, setSelectedDate] = useState(new Date());
+  const [autoRenewalOptions, setAutoRenewalOptions] = useState({
+    mortgage: false,
+    insurance: false,
+    lease: false,
+    propertyTax: false,
+  });
+
+  const formatDate = toStoredDate;
+
   const property = properties.find(p => p.id === id);
   
   const [formData, setFormData] = useState({
     name: "",
     address: "",
     type: "single-family" as Property["type"],
-    purchaseDate: new Date().toISOString().split('T')[0],
+    purchaseDate: formatDate(new Date()),
     purchasePrice: "",
     currentValue: "",
+    squareFootage: "",
     monthlyRent: "",
     tenantName: "",
     tenantContact: "",
@@ -44,6 +76,7 @@ export default function EditPropertyScreen() {
     insuranceRenewalDate: "",
     insurancePremium: "",
     propertyTax: "",
+    propertyTaxDueDate: "",
     acCapacitorSize: "",
     acFilterSize: "",
     paintColorsInside: "",
@@ -52,18 +85,37 @@ export default function EditPropertyScreen() {
     applianceInfo: "",
     notes: "",
     imageUri: "",
+    backgroundColor: PROPERTY_BACKGROUND_COLORS[0].value,
+    customFields: [] as CustomPropertyField[],
   });
+
+  React.useEffect(() => {
+    const showSub = Keyboard.addListener("keyboardDidShow", (event) => {
+      setKeyboardOffset(event.endCoordinates?.height || 0);
+    });
+    const hideSub = Keyboard.addListener("keyboardDidHide", () => {
+      setKeyboardOffset(0);
+    });
+
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
 
   // Load property data when component mounts
   useEffect(() => {
     if (property) {
+      const parsedPurchaseDate = property.purchaseDate ? parseTransactionDate(property.purchaseDate) : new Date();
+      setSelectedDate(parsedPurchaseDate);
       setFormData({
         name: property.name || "",
         address: property.address || "",
         type: property.type,
-        purchaseDate: property.purchaseDate || new Date().toISOString().split('T')[0],
+        purchaseDate: property.purchaseDate ? formatDate(parsedPurchaseDate) : formatDate(new Date()),
         purchasePrice: property.purchasePrice?.toString() || "",
         currentValue: property.currentValue?.toString() || "",
+        squareFootage: property.squareFootage?.toString() || "",
         monthlyRent: property.monthlyRent?.toString() || "",
         tenantName: property.tenantName || "",
         tenantContact: property.tenantContact || "",
@@ -77,6 +129,7 @@ export default function EditPropertyScreen() {
         insuranceRenewalDate: property.insuranceRenewalDate || "",
         insurancePremium: property.insurancePremium?.toString() || "",
         propertyTax: property.propertyTax?.toString() || "",
+        propertyTaxDueDate: property.propertyTaxDueDate || "",
         acCapacitorSize: property.acCapacitorSize || "",
         acFilterSize: property.acFilterSize || "",
         paintColorsInside: property.paintColorsInside || "",
@@ -85,6 +138,8 @@ export default function EditPropertyScreen() {
         applianceInfo: property.applianceInfo || "",
         notes: property.notes || "",
         imageUri: property.imageUri || "",
+        backgroundColor: property.backgroundColor || PROPERTY_BACKGROUND_COLORS[0].value,
+        customFields: property.customFields || [],
       });
     }
   }, [property]);
@@ -101,12 +156,12 @@ export default function EditPropertyScreen() {
     const required = [];
     if (!formData.name.trim()) required.push('Property Name');
     if (!formData.address.trim()) required.push('Address');
-    if (!formData.purchasePrice.trim()) required.push('Purchase Price');
-    if (!formData.monthlyRent.trim()) required.push('Monthly Rent');
     return required;
   };
 
   const handleSave = () => {
+    if (isSaving) return;
+
     const missingFields = getRequiredFields();
     
     if (missingFields.length > 0) {
@@ -125,7 +180,10 @@ export default function EditPropertyScreen() {
   };
 
   const saveProperty = async () => {
+    if (isSaving) return;
+
     try {
+      setIsSaving(true);
       const updatedProperty: Partial<Property> = {
         name: formData.name.trim() || 'Untitled Property',
         address: formData.address.trim() || 'Address not provided',
@@ -133,6 +191,7 @@ export default function EditPropertyScreen() {
         purchaseDate: formData.purchaseDate,
         purchasePrice: parseFloat(formData.purchasePrice) || 0,
         currentValue: formData.currentValue ? parseFloat(formData.currentValue) : undefined,
+        squareFootage: formData.squareFootage ? parseFloat(formData.squareFootage) : undefined,
         monthlyRent: parseFloat(formData.monthlyRent) || 0,
         tenantName: formData.tenantName || undefined,
         tenantContact: formData.tenantContact || undefined,
@@ -146,6 +205,7 @@ export default function EditPropertyScreen() {
         insuranceRenewalDate: formData.insuranceRenewalDate || undefined,
         insurancePremium: formData.insurancePremium ? parseFloat(formData.insurancePremium) : undefined,
         propertyTax: formData.propertyTax ? parseFloat(formData.propertyTax) : undefined,
+        propertyTaxDueDate: formData.propertyTaxDueDate || undefined,
         acCapacitorSize: formData.acCapacitorSize || undefined,
         acFilterSize: formData.acFilterSize || undefined,
         paintColorsInside: formData.paintColorsInside || undefined,
@@ -154,16 +214,86 @@ export default function EditPropertyScreen() {
         applianceInfo: formData.applianceInfo || undefined,
         notes: formData.notes || undefined,
         imageUri: formData.imageUri || undefined,
+        backgroundColor: formData.backgroundColor || undefined,
+        customFields: cleanCustomFields(formData.customFields),
       };
 
       console.log('Updating property:', updatedProperty);
       await updateProperty(property.id, updatedProperty);
+      const reminderResults: boolean[] = [];
+      if (autoRenewalOptions.mortgage && updatedProperty.mortgageRenewalDate) {
+        reminderResults.push(await createRenewalReminder('mortgage', updatedProperty.mortgageRenewalDate, updatedProperty.name || property.name, property.id));
+      }
+      if (autoRenewalOptions.insurance && updatedProperty.insuranceRenewalDate) {
+        reminderResults.push(await createRenewalReminder('insurance', updatedProperty.insuranceRenewalDate, updatedProperty.name || property.name, property.id));
+      }
+      if (autoRenewalOptions.lease && updatedProperty.leaseEnd) {
+        reminderResults.push(await createRenewalReminder('lease', updatedProperty.leaseEnd, updatedProperty.name || property.name, property.id));
+      }
+      if (autoRenewalOptions.propertyTax && updatedProperty.propertyTaxDueDate) {
+        reminderResults.push(await createRenewalReminder('propertyTax', updatedProperty.propertyTaxDueDate, updatedProperty.name || property.name, property.id));
+      }
+
+      const failedReminderCount = reminderResults.filter(result => !result).length;
+      if (failedReminderCount > 0) {
+        Alert.alert('Property saved', `${failedReminderCount} reminder(s) could not be created. Please try adding them from the Reminders tab.`);
+        return;
+      }
+
       Alert.alert('Success', 'Property updated successfully!');
       router.back();
     } catch (error) {
       console.error('Error updating property:', error);
-      Alert.alert('Error', 'Failed to update property. Please try again.');
+      const message = error instanceof Error ? error.message : 'Failed to update property. Please try again.';
+      Alert.alert('Error', message);
+    } finally {
+      setIsSaving(false);
     }
+  };
+
+  const createRenewalReminder = async (
+    type: 'mortgage' | 'insurance' | 'lease' | 'propertyTax',
+    renewalDate: string,
+    propertyName: string,
+    propertyId: string,
+  ): Promise<boolean> => {
+    try {
+      if (!renewalDate || !propertyId) return false;
+      const due = new Date(renewalDate);
+      if (Number.isNaN(due.getTime())) return false;
+
+      const titleMap = {
+        mortgage: `Mortgage renewal for ${propertyName}`,
+        insurance: `Insurance renewal for ${propertyName}`,
+        lease: `Lease renewal for ${propertyName}`,
+        propertyTax: `Property tax due for ${propertyName}`,
+      } as const;
+
+      const reminderDate = new Date(due);
+      reminderDate.setFullYear(reminderDate.getFullYear() + 1);
+
+      await addReminder({
+        id: `renewal_${type}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        propertyId,
+        type: type === 'propertyTax' ? 'other' : type,
+        title: titleMap[type],
+        dueDate: toStoredDate(reminderDate),
+        notes: 'Auto-created yearly renewal reminder.',
+        completed: false,
+      });
+
+      return true;
+    } catch (error) {
+      console.warn('Failed to create yearly renewal reminder:', error);
+      return false;
+    }
+  };
+
+  const openDatePicker = (field: PropertyDateField) => {
+    const currentDate = formData[field] ? parseTransactionDate(formData[field]) : new Date();
+    setActiveDateField(field);
+    setSelectedDate(Number.isNaN(currentDate.getTime()) ? new Date() : currentDate);
+    setShowDatePicker(true);
   };
 
   const pickImage = async () => {
@@ -179,15 +309,33 @@ export default function EditPropertyScreen() {
     }
   };
 
+  const addCustomField = () => {
+    if (formData.customFields.length >= MAX_CUSTOM_FIELDS) return;
+    setFormData({ ...formData, customFields: [...formData.customFields, createCustomField()] });
+  };
+
+  const updateCustomField = (fieldId: string, updates: Partial<CustomPropertyField>) => {
+    setFormData({
+      ...formData,
+      customFields: formData.customFields.map(field => field.id === fieldId ? { ...field, ...updates } : field),
+    });
+  };
+
+  const removeCustomField = (fieldId: string) => {
+    setFormData({ ...formData, customFields: formData.customFields.filter(field => field.id !== fieldId) });
+  };
+
   return (
     <SafeAreaView style={styles.container} edges={["bottom"]}>
     <KeyboardAvoidingView 
-      behavior={Platform.OS === "ios" ? "padding" : "height"}
+      behavior="padding"
+      keyboardVerticalOffset={Platform.OS === "ios" ? 90 : 96}
       style={{ flex: 1 }}
     >
       <ScrollView 
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={{ paddingBottom: 16 }}
+        keyboardShouldPersistTaps="handled"
+        contentContainerStyle={{ paddingBottom: Math.max(16, keyboardOffset + 24) }}
       >
         <View style={styles.form}>
           {/* Basic Information */}
@@ -207,6 +355,7 @@ export default function EditPropertyScreen() {
               value={formData.name}
               onChangeText={(text) => setFormData({ ...formData, name: text })}
               placeholder="e.g., Main Street Apartment"
+              placeholderTextColor="#6B7280"
             />
             
             <Text style={styles.label}>Address *</Text>
@@ -215,6 +364,7 @@ export default function EditPropertyScreen() {
               value={formData.address}
               onChangeText={(text) => setFormData({ ...formData, address: text })}
               placeholder="123 Main St, City, State ZIP"
+              placeholderTextColor="#6B7280"
               multiline
             />
             
@@ -238,15 +388,38 @@ export default function EditPropertyScreen() {
                 </TouchableOpacity>
               ))}
             </View>
+
+            <Text style={styles.label}>Dashboard Color</Text>
+            <View style={styles.colorGrid}>
+              {PROPERTY_BACKGROUND_COLORS.map(color => (
+                <TouchableOpacity
+                  key={color.value}
+                  style={[
+                    styles.colorOption,
+                    { backgroundColor: color.value },
+                    formData.backgroundColor === color.value && styles.colorOptionActive
+                  ]}
+                  onPress={() => setFormData({ ...formData, backgroundColor: color.value })}
+                  accessibilityLabel={color.label}
+                >
+                  {formData.backgroundColor === color.value && (
+                    <View style={styles.checkmark}>
+                      <Text style={styles.checkmarkText}>✓</Text>
+                    </View>
+                  )}
+                </TouchableOpacity>
+              ))}
+            </View>
+            <Text style={styles.colorNote}>Select a color for the property button on the dashboard</Text>
           </View>
 
           {/* Financial Information */}
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Financial Information</Text>
             
-            <Text style={styles.label}>Purchase Price *</Text>
+            <Text style={styles.label}>Purchase Price</Text>
             <TextInput
-              style={[styles.input, !formData.purchasePrice.trim() && styles.inputHighlight]}
+              style={styles.input}
               value={formData.purchasePrice}
               onChangeText={(text) => {
                 // Allow only numbers and decimal points
@@ -256,6 +429,15 @@ export default function EditPropertyScreen() {
               placeholder="150000"
               keyboardType="decimal-pad"
             />
+
+            <Text style={styles.label}>Purchase Date</Text>
+            <TouchableOpacity
+              style={styles.dateButton}
+              onPress={() => openDatePicker("purchaseDate")}
+            >
+              <CalendarIcon size={20} color="#6B7280" />
+              <Text style={styles.dateButtonText}>{formatDisplayDate(formData.purchaseDate)}</Text>
+            </TouchableOpacity>
             
             <Text style={styles.label}>Current Value</Text>
             <TextInput
@@ -269,10 +451,22 @@ export default function EditPropertyScreen() {
               placeholder="175000"
               keyboardType="decimal-pad"
             />
-            
-            <Text style={styles.label}>Monthly Rent *</Text>
+
+            <Text style={styles.label}>Square Footage</Text>
             <TextInput
-              style={[styles.input, !formData.monthlyRent.trim() && styles.inputHighlight]}
+              style={styles.input}
+              value={formData.squareFootage}
+              onChangeText={(text) => {
+                const numericText = text.replace(/[^0-9.]/g, '');
+                setFormData({ ...formData, squareFootage: numericText });
+              }}
+              placeholder="1200"
+              keyboardType="decimal-pad"
+            />
+            
+            <Text style={styles.label}>Monthly Rent</Text>
+            <TextInput
+              style={styles.input}
               value={formData.monthlyRent}
               onChangeText={(text) => {
                 // Allow only numbers and decimal points
@@ -295,6 +489,25 @@ export default function EditPropertyScreen() {
               placeholder="3500"
               keyboardType="decimal-pad"
             />
+
+            <Text style={styles.label}>Property Tax Due Date</Text>
+            <TouchableOpacity
+              style={styles.dateButton}
+              onPress={() => openDatePicker("propertyTaxDueDate")}
+            >
+              <CalendarIcon size={20} color="#6B7280" />
+              <Text style={styles.dateButtonText}>{formData.propertyTaxDueDate ? formatDisplayDate(formData.propertyTaxDueDate) : "Select date"}</Text>
+            </TouchableOpacity>
+            {formData.propertyTaxDueDate ? (
+              <TouchableOpacity
+                style={[styles.reminderToggle, autoRenewalOptions.propertyTax && styles.reminderToggleActive]}
+                onPress={() => setAutoRenewalOptions({ ...autoRenewalOptions, propertyTax: !autoRenewalOptions.propertyTax })}
+              >
+                <Text style={[styles.reminderToggleText, autoRenewalOptions.propertyTax && styles.reminderToggleTextActive]}>
+                  {autoRenewalOptions.propertyTax ? 'Auto reminder on' : 'Create yearly reminder'}
+                </Text>
+              </TouchableOpacity>
+            ) : null}
           </View>
 
           {/* Mortgage Information */}
@@ -328,12 +541,23 @@ export default function EditPropertyScreen() {
             />
             
             <Text style={styles.label}>Renewal Date</Text>
-            <TextInput
-              style={styles.input}
-              value={formData.mortgageRenewalDate}
-              onChangeText={(text) => setFormData({ ...formData, mortgageRenewalDate: text })}
-              placeholder="mm-dd-yy"
-            />
+            <TouchableOpacity
+              style={styles.dateButton}
+              onPress={() => openDatePicker("mortgageRenewalDate")}
+            >
+              <CalendarIcon size={20} color="#6B7280" />
+              <Text style={styles.dateButtonText}>{formData.mortgageRenewalDate ? formatDisplayDate(formData.mortgageRenewalDate) : "Select date"}</Text>
+            </TouchableOpacity>
+            {formData.mortgageRenewalDate ? (
+              <TouchableOpacity
+                style={[styles.reminderToggle, autoRenewalOptions.mortgage && styles.reminderToggleActive]}
+                onPress={() => setAutoRenewalOptions({ ...autoRenewalOptions, mortgage: !autoRenewalOptions.mortgage })}
+              >
+                <Text style={[styles.reminderToggleText, autoRenewalOptions.mortgage && styles.reminderToggleTextActive]}>
+                  {autoRenewalOptions.mortgage ? 'Auto reminder on' : 'Create yearly reminder'}
+                </Text>
+              </TouchableOpacity>
+            ) : null}
           </View>
 
           {/* Insurance Information */}
@@ -370,12 +594,23 @@ export default function EditPropertyScreen() {
             />
             
             <Text style={styles.label}>Renewal Date</Text>
-            <TextInput
-              style={styles.input}
-              value={formData.insuranceRenewalDate}
-              onChangeText={(text) => setFormData({ ...formData, insuranceRenewalDate: text })}
-              placeholder="mm-dd-yy"
-            />
+            <TouchableOpacity
+              style={styles.dateButton}
+              onPress={() => openDatePicker("insuranceRenewalDate")}
+            >
+              <CalendarIcon size={20} color="#6B7280" />
+              <Text style={styles.dateButtonText}>{formData.insuranceRenewalDate ? formatDisplayDate(formData.insuranceRenewalDate) : "Select date"}</Text>
+            </TouchableOpacity>
+            {formData.insuranceRenewalDate ? (
+              <TouchableOpacity
+                style={[styles.reminderToggle, autoRenewalOptions.insurance && styles.reminderToggleActive]}
+                onPress={() => setAutoRenewalOptions({ ...autoRenewalOptions, insurance: !autoRenewalOptions.insurance })}
+              >
+                <Text style={[styles.reminderToggleText, autoRenewalOptions.insurance && styles.reminderToggleTextActive]}>
+                  {autoRenewalOptions.insurance ? 'Auto reminder on' : 'Create yearly reminder'}
+                </Text>
+              </TouchableOpacity>
+            ) : null}
           </View>
 
           {/* Tenant Information */}
@@ -399,20 +634,32 @@ export default function EditPropertyScreen() {
             />
             
             <Text style={styles.label}>Lease Start</Text>
-            <TextInput
-              style={styles.input}
-              value={formData.leaseStart}
-              onChangeText={(text) => setFormData({ ...formData, leaseStart: text })}
-              placeholder="mm-dd-yy"
-            />
+            <TouchableOpacity
+              style={styles.dateButton}
+              onPress={() => openDatePicker("leaseStart")}
+            >
+              <CalendarIcon size={20} color="#6B7280" />
+              <Text style={styles.dateButtonText}>{formData.leaseStart ? formatDisplayDate(formData.leaseStart) : "Select date"}</Text>
+            </TouchableOpacity>
             
             <Text style={styles.label}>Lease End</Text>
-            <TextInput
-              style={styles.input}
-              value={formData.leaseEnd}
-              onChangeText={(text) => setFormData({ ...formData, leaseEnd: text })}
-              placeholder="mm-dd-yy"
-            />
+            <TouchableOpacity
+              style={styles.dateButton}
+              onPress={() => openDatePicker("leaseEnd")}
+            >
+              <CalendarIcon size={20} color="#6B7280" />
+              <Text style={styles.dateButtonText}>{formData.leaseEnd ? formatDisplayDate(formData.leaseEnd) : "Select date"}</Text>
+            </TouchableOpacity>
+            {formData.leaseEnd ? (
+              <TouchableOpacity
+                style={[styles.reminderToggle, autoRenewalOptions.lease && styles.reminderToggleActive]}
+                onPress={() => setAutoRenewalOptions({ ...autoRenewalOptions, lease: !autoRenewalOptions.lease })}
+              >
+                <Text style={[styles.reminderToggleText, autoRenewalOptions.lease && styles.reminderToggleTextActive]}>
+                  {autoRenewalOptions.lease ? 'Auto reminder on' : 'Create yearly reminder'}
+                </Text>
+              </TouchableOpacity>
+            ) : null}
           </View>
 
           {/* Property Details */}
@@ -474,6 +721,46 @@ export default function EditPropertyScreen() {
               multiline
               numberOfLines={4}
             />
+
+            <View style={styles.customFieldsHeader}>
+              <View>
+                <Text style={styles.label}>Custom Rows</Text>
+                <Text style={styles.customFieldsCount}>{formData.customFields.length}/{MAX_CUSTOM_FIELDS}</Text>
+              </View>
+              <TouchableOpacity
+                style={[styles.addCustomFieldButton, formData.customFields.length >= MAX_CUSTOM_FIELDS && styles.addCustomFieldButtonDisabled]}
+                onPress={addCustomField}
+                disabled={formData.customFields.length >= MAX_CUSTOM_FIELDS}
+              >
+                <Plus size={16} color="#FFFFFF" />
+                <Text style={styles.addCustomFieldButtonText}>Add Row</Text>
+              </TouchableOpacity>
+            </View>
+
+            {formData.customFields.map((field, index) => (
+              <View key={field.id} style={styles.customFieldRow}>
+                <View style={styles.customFieldInputs}>
+                  <TextInput
+                    style={styles.input}
+                    value={field.label}
+                    onChangeText={(text) => updateCustomField(field.id, { label: text })}
+                    placeholder={`Label ${index + 1}`}
+                    placeholderTextColor="#6B7280"
+                  />
+                  <TextInput
+                    style={[styles.input, styles.customFieldValueInput]}
+                    value={field.value}
+                    onChangeText={(text) => updateCustomField(field.id, { value: text })}
+                    placeholder="Value"
+                    placeholderTextColor="#6B7280"
+                    multiline
+                  />
+                </View>
+                <TouchableOpacity style={styles.removeCustomFieldButton} onPress={() => removeCustomField(field.id)}>
+                  <Trash2 size={18} color="#EF4444" />
+                </TouchableOpacity>
+              </View>
+            ))}
           </View>
 
           {/* Notes */}
@@ -491,15 +778,30 @@ export default function EditPropertyScreen() {
 
           {/* Action Buttons */}
           <View style={styles.actions}>
-            <TouchableOpacity style={styles.cancelButton} onPress={() => router.back()}>
+            <TouchableOpacity style={styles.cancelButton} onPress={() => router.back()} disabled={isSaving}>
               <Text style={styles.cancelButtonText}>Cancel</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.saveButton} onPress={handleSave}>
-              <Text style={styles.saveButtonText}>Update Property</Text>
+            <TouchableOpacity style={styles.saveButton} onPress={handleSave} disabled={isSaving}>
+              <Text style={styles.saveButtonText}>{isSaving ? 'Saving...' : 'Update Property'}</Text>
             </TouchableOpacity>
           </View>
         </View>
       </ScrollView>
+
+      {showDatePicker && (
+        <DateTimePicker
+          value={selectedDate}
+          mode="date"
+          display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+          onChange={(event, date) => {
+            setShowDatePicker(Platform.OS === 'ios');
+            if (date) {
+              setSelectedDate(date);
+              setFormData({ ...formData, [activeDateField]: formatDate(date) });
+            }
+          }}
+        />
+      )}
     </KeyboardAvoidingView>
     </SafeAreaView>
   );
@@ -540,6 +842,7 @@ const styles = StyleSheet.create({
   },
   input: {
     backgroundColor: "#FFFFFF",
+    color: "#111827",
     borderWidth: 1,
     borderColor: "#D1D5DB",
     borderRadius: 8,
@@ -550,6 +853,44 @@ const styles = StyleSheet.create({
   textArea: {
     minHeight: 100,
     textAlignVertical: "top",
+  },
+  dateButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1,
+    borderColor: "#D1D5DB",
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 16,
+  },
+  dateButtonText: {
+    fontSize: 16,
+    color: "#111827",
+  },
+  reminderToggle: {
+    backgroundColor: "#F3F4F6",
+    borderWidth: 1,
+    borderColor: "#D1D5DB",
+    borderRadius: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    alignItems: "center",
+    marginTop: -8,
+    marginBottom: 16,
+  },
+  reminderToggleActive: {
+    backgroundColor: "#EEF6FF",
+    borderColor: "#2563EB",
+  },
+  reminderToggleText: {
+    fontSize: 14,
+    fontWeight: "500",
+    color: "#6B7280",
+  },
+  reminderToggleTextActive: {
+    color: "#2563EB",
   },
   imageButton: {
     flexDirection: "row",
@@ -627,5 +968,95 @@ const styles = StyleSheet.create({
     borderColor: "#FCD34D",
     borderWidth: 2,
     backgroundColor: "#FFFBEB",
+  },
+  colorGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 12,
+    marginBottom: 8,
+  },
+  colorOption: {
+    width: "30%",
+    aspectRatio: 1,
+    borderRadius: 8,
+    justifyContent: "center",
+    alignItems: "center",
+    borderWidth: 2,
+    borderColor: "transparent",
+  },
+  colorOptionActive: {
+    borderColor: "#FFFFFF",
+    borderWidth: 3,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 3,
+    elevation: 5,
+  },
+  checkmark: {
+    backgroundColor: "rgba(0, 0, 0, 0.2)",
+    borderRadius: 20,
+    width: 32,
+    height: 32,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  checkmarkText: {
+    color: "#FFFFFF",
+    fontSize: 20,
+    fontWeight: "700" as const,
+  },
+  colorNote: {
+    fontSize: 12,
+    color: "#6B7280",
+    fontStyle: "italic" as const,
+  },
+  customFieldsHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginTop: 8,
+    marginBottom: 12,
+  },
+  customFieldsCount: {
+    fontSize: 12,
+    color: "#6B7280",
+  },
+  addCustomFieldButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#3B82F6",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+    gap: 6,
+  },
+  addCustomFieldButtonDisabled: {
+    backgroundColor: "#9CA3AF",
+  },
+  addCustomFieldButtonText: {
+    color: "#FFFFFF",
+    fontSize: 13,
+    fontWeight: "600" as const,
+  },
+  customFieldRow: {
+    flexDirection: "row",
+    gap: 8,
+    alignItems: "flex-start",
+    marginBottom: 4,
+  },
+  customFieldInputs: {
+    flex: 1,
+  },
+  customFieldValueInput: {
+    minHeight: 72,
+    textAlignVertical: "top",
+  },
+  removeCustomFieldButton: {
+    backgroundColor: "#FEF2F2",
+    borderWidth: 1,
+    borderColor: "#FECACA",
+    borderRadius: 8,
+    padding: 10,
   },
 });

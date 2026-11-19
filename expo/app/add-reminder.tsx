@@ -16,17 +16,23 @@ import { usePortfolio } from "@/hooks/portfolio-store";
 import { Reminder } from "@/types/property";
 import { REMINDER_TYPES } from "@/constants/categories";
 import { Calendar, Bell, ChevronDown, Phone, Mail } from "lucide-react-native";
+import DateTimePicker from '@react-native-community/datetimepicker';
 import { SafeAreaView } from "react-native-safe-area-context";
+import { toStoredDate, formatDisplayDate } from "@/lib/dates";
 
 export default function AddReminderScreen() {
   const { properties, addReminder } = usePortfolio();
   const [showPropertyDropdown, setShowPropertyDropdown] = useState(false);
+  const [showDatePicker, setShowDatePicker] = useState(false);
+  const [selectedDate, setSelectedDate] = useState(new Date());
+
+  const formatDate = toStoredDate;
   
   const [formData, setFormData] = useState({
     propertyId: "",
     type: "other" as Reminder["type"],
     title: "",
-    dueDate: "",
+    dueDate: formatDate(new Date()),
     notes: "",
     recipientPhone: "",
     recipientEmail: "",
@@ -135,11 +141,13 @@ export default function AddReminderScreen() {
   return (
     <SafeAreaView style={styles.container} edges={["bottom"]}>
     <KeyboardAvoidingView 
-      behavior={Platform.OS === "ios" ? "padding" : "height"}
+      behavior="padding"
+      keyboardVerticalOffset={Platform.OS === "ios" ? 90 : 64}
       style={{ flex: 1 }}
     >
       <ScrollView 
         showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
         contentContainerStyle={{ paddingBottom: 16 }}
       >
         <View style={styles.form}>
@@ -200,15 +208,15 @@ export default function AddReminderScreen() {
           {/* Due Date */}
           <View style={styles.section}>
             <Text style={styles.label}>Due Date *</Text>
-            <View style={[styles.dateContainer, !formData.dueDate.trim() && styles.inputHighlight]}>
+            <TouchableOpacity
+              style={[styles.dateContainer, !formData.dueDate.trim() && styles.inputHighlight]}
+              onPress={() => setShowDatePicker(true)}
+            >
               <Calendar size={20} color="#6B7280" />
-              <TextInput
-                style={styles.dateInput}
-                value={formData.dueDate}
-                onChangeText={(text) => setFormData({ ...formData, dueDate: text })}
-                placeholder="mm-dd-yy"
-              />
-            </View>
+              <Text style={[styles.dateInput, !formData.dueDate ? styles.placeholderText : undefined]}>
+                {formatDisplayDate(formData.dueDate) || 'MM/DD/YYYY'}
+              </Text>
+            </TouchableOpacity>
           </View>
 
           {/* Quick Date Options */}
@@ -228,7 +236,8 @@ export default function AddReminderScreen() {
                   onPress={() => {
                     const date = new Date();
                     date.setDate(date.getDate() + option.days);
-                    setFormData({ ...formData, dueDate: date.toISOString().split('T')[0] });
+                    setSelectedDate(date);
+                    setFormData({ ...formData, dueDate: formatDate(date) });
                   }}
                 >
                   <Text style={styles.quickDateOptionText}>{option.label}</Text>
@@ -338,6 +347,21 @@ export default function AddReminderScreen() {
           </View>
         </TouchableOpacity>
       </Modal>
+
+      {showDatePicker && (
+        <DateTimePicker
+          value={selectedDate}
+          mode="date"
+          display="default"
+          onChange={(event, date) => {
+            setShowDatePicker(Platform.OS === 'ios');
+            if (event.type === 'set' && date) {
+              setSelectedDate(date);
+              setFormData({ ...formData, dueDate: formatDate(date) });
+            }
+          }}
+        />
+      )}
     </KeyboardAvoidingView>
     </SafeAreaView>
   );

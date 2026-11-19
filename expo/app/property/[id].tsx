@@ -4,6 +4,7 @@ import {
   Text,
   View,
   ScrollView,
+  KeyboardAvoidingView,
   TouchableOpacity,
   Image,
   Alert,
@@ -11,31 +12,42 @@ import {
   TextInput,
   Pressable,
   Platform,
+  Share,
 } from "react-native";
 import { router, useLocalSearchParams } from "expo-router";
 import { usePortfolio, usePropertyTransactions, usePropertyReceipts, usePropertyReminders, usePropertyPhotos } from "@/hooks/portfolio-store";
 import { PropertyPhoto } from "@/types/property";
 import * as ImagePicker from "expo-image-picker";
-import { Edit, Home, DollarSign, FileText, Bell, Plus, Trash2, Image as ImageIcon, Camera, X, MessageSquare, Mail, CalendarDays } from "lucide-react-native";
+import { Edit, Home, DollarSign, FileText, Bell, Plus, Trash2, Image as ImageIcon, Camera, X, MessageSquare, Mail, CalendarDays, Share2, Folder, Wrench } from "lucide-react-native";
 import { Linking } from "react-native";
 import * as Calendar from "expo-calendar";
+import * as Sharing from "expo-sharing";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { formatDisplayDate, parseStoredDate } from "@/lib/dates";
 
 export default function PropertyDetailsScreen() {
   const { id } = useLocalSearchParams();
-  const { properties, deleteProperty, deleteReminder } = usePortfolio();
+  const { properties, leaseFolders, leaseDocuments, deleteProperty, deleteReminder } = usePortfolio();
   const transactions = usePropertyTransactions(id as string);
   const receipts = usePropertyReceipts(id as string);
   const reminders = usePropertyReminders(id as string);
   const photos = usePropertyPhotos(id as string);
+  const propertyLeaseFolders = leaseFolders.filter(folder => folder.propertyId === id);
+  const propertyLeaseDocuments = leaseDocuments.filter(document => document.propertyId === id);
   
   const [showPhotoModal, setShowPhotoModal] = useState(false);
-  const [selectedPhotoUri, setSelectedPhotoUri] = useState<string | null>(null);
-  const [photoCaption, setPhotoCaption] = useState("");
+  const [selectedPhotoUris, setSelectedPhotoUris] = useState<string[]>([]);
+  const [photoCaptions, setPhotoCaptions] = useState<string[]>([]);
+  const [photoWizardIndex, setPhotoWizardIndex] = useState(0);
+  const [isSavingPhoto, setIsSavingPhoto] = useState(false);
+  const [photoSaveProgress, setPhotoSaveProgress] = useState({ completed: 0, total: 0 });
   const [activeTab, setActiveTab] = useState<"overview" | "transactions" | "documents" | "reminders">("overview");
   const [showGallery, setShowGallery] = useState(false);
   const [viewerUri, setViewerUri] = useState<string | null>(null);
   const [viewerCaption, setViewerCaption] = useState<string>("");
+  const [editingPhoto, setEditingPhoto] = useState<PropertyPhoto | null>(null);
+  const [editingCaption, setEditingCaption] = useState("");
+  const [isUpdatingCaption, setIsUpdatingCaption] = useState(false);
   
   const property = properties.find(p => p.id === id);
 
@@ -56,15 +68,41 @@ export default function PropertyDetailsScreen() {
     }).format(amount);
   };
 
-  const formatDate = (dateString: string) => {
-    const date = new Date(dateString);
-    const month = (date.getMonth() + 1).toString().padStart(2, '0');
-    const day = date.getDate().toString().padStart(2, '0');
-    const year = date.getFullYear().toString().slice(-2);
-    return `${month}-${day}-${year}`;
+  const formatDate = (dateString?: string) => {
+    if (!dateString) return '—';
+    return formatDisplayDate(dateString);
   };
 
-  const { addPropertyPhoto, deletePropertyPhoto } = usePortfolio();
+  const formatTransactionDate = (dateString: string) => {
+    const date = parseStoredDate(dateString);
+    if (Number.isNaN(date.getTime())) {
+      return dateString;
+    }
+
+    return date.toLocaleDateString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    });
+  };
+
+  const { addPropertyPhoto, updatePropertyPhoto, deletePropertyPhoto } = usePortfolio();
+
+  const resetPhotoWizard = () => {
+    setShowPhotoModal(false);
+    setSelectedPhotoUris([]);
+    setPhotoCaptions([]);
+    setPhotoWizardIndex(0);
+    setPhotoSaveProgress({ completed: 0, total: 0 });
+  };
+
+  const updateCurrentPhotoCaption = (text: string) => {
+    setPhotoCaptions(prev => {
+      const next = [...prev];
+      next[photoWizardIndex] = text;
+      return next;
+    });
+  };
 
   const pickPhoto = async () => {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -74,11 +112,16 @@ export default function PropertyDetailsScreen() {
     }
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ['images'],
+      allowsEditing: false,
+      allowsMultipleSelection: true,
+      selectionLimit: 0,
+      orderedSelection: true,
       quality: 0.8,
     });
-    if (!result.canceled && result.assets[0]) {
-      setSelectedPhotoUri(result.assets[0].uri);
-      setPhotoCaption('');
+    if (!result.canceled && result.assets.length > 0) {
+      setSelectedPhotoUris(result.assets.map(asset => asset.uri));
+      setPhotoCaptions(result.assets.map(() => ''));
+      setPhotoWizardIndex(0);
       setShowPhotoModal(true);
     }
   };
@@ -93,25 +136,74 @@ export default function PropertyDetailsScreen() {
       quality: 0.8,
     });
     if (!result.canceled && result.assets[0]) {
-      setSelectedPhotoUri(result.assets[0].uri);
-      setPhotoCaption('');
+      setSelectedPhotoUris([result.assets[0].uri]);
+      setPhotoCaptions(['']);
+      setPhotoWizardIndex(0);
       setShowPhotoModal(true);
     }
   };
 
-  const savePhoto = () => {
-    if (!selectedPhotoUri) return;
-    const newPhoto: PropertyPhoto = {
-      id: `photo_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+  const saveSelectedPhotos = () => {
+    if (selectedPhotoUris.length === 0 || isSavingPhoto) return;
+
+    const totalSelected = selectedPhotoUris.length;
+    const photosToSave: PropertyPhoto[] = selectedPhotoUris.map((uri, index) => ({
+      id: `photo_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`,
       propertyId: id as string,
-      uri: selectedPhotoUri,
-      caption: photoCaption.trim(),
+      uri,
+      caption: (photoCaptions[index] || '').trim(),
       date: new Date().toISOString(),
+    }));
+
+    // Close the wizard immediately: addPropertyPhoto adds each photo to local
+    // state right away, then uploads/syncs to the cloud in the background.
+    resetPhotoWizard();
+
+    setIsSavingPhoto(true);
+    setPhotoSaveProgress({ completed: 0, total: totalSelected });
+
+    let nextIndex = 0;
+    let failureCount = 0;
+    const workerCount = Math.min(3, photosToSave.length);
+
+    const saveWorker = async () => {
+      while (nextIndex < photosToSave.length) {
+        const currentIndex = nextIndex;
+        nextIndex += 1;
+        try {
+          await addPropertyPhoto(photosToSave[currentIndex]);
+        } catch {
+          failureCount += 1;
+        } finally {
+          setPhotoSaveProgress(prev => ({ completed: prev.completed + 1, total: prev.total }));
+        }
+      }
     };
-    addPropertyPhoto(newPhoto);
-    setShowPhotoModal(false);
-    setSelectedPhotoUri(null);
-    setPhotoCaption('');
+
+    Promise.all(Array.from({ length: workerCount }, () => saveWorker()))
+      .then(() => {
+        if (failureCount > 0 && failureCount < totalSelected) {
+          Alert.alert('Partial Sync Issue', `${totalSelected - failureCount} photo(s) synced. ${failureCount} failed to upload. Please retry the failed ones.`);
+        } else if (failureCount === totalSelected) {
+          Alert.alert('Sync Failed', totalSelected > 1 ? 'Failed to sync photos to the cloud. Please try again.' : 'Failed to sync photo to the cloud. Please try again.');
+        }
+      })
+      .catch((error) => {
+        console.error('Error saving photo(s):', error);
+        Alert.alert('Sync Failed', totalSelected > 1 ? 'Failed to sync one or more photos. Please try again.' : 'Failed to sync photo. Please try again.');
+      })
+      .finally(() => {
+        setIsSavingPhoto(false);
+        setPhotoSaveProgress({ completed: 0, total: 0 });
+      });
+  };
+
+  const handlePhotoWizardPrimaryAction = async () => {
+    if (selectedPhotoUris.length > 1 && photoWizardIndex < selectedPhotoUris.length - 1) {
+      setPhotoWizardIndex(prev => prev + 1);
+      return;
+    }
+    saveSelectedPhotos();
   };
 
   const deletePhoto = (photoId: string) => {
@@ -127,6 +219,26 @@ export default function PropertyDetailsScreen() {
         },
       ]
     );
+  };
+
+  const openCaptionEditor = (photo: PropertyPhoto) => {
+    setEditingPhoto(photo);
+    setEditingCaption(photo.caption || '');
+  };
+
+  const saveEditedCaption = async () => {
+    if (!editingPhoto || isUpdatingCaption) return;
+    setIsUpdatingCaption(true);
+    try {
+      await updatePropertyPhoto(editingPhoto.id, { caption: editingCaption.trim() });
+      setEditingPhoto(null);
+      setEditingCaption('');
+    } catch (error) {
+      console.error('Error updating photo caption:', error);
+      Alert.alert('Error', 'Failed to update caption. Please try again.');
+    } finally {
+      setIsUpdatingCaption(false);
+    }
   };
 
   const addToCalendar = async (reminder: typeof reminders[0]) => {
@@ -187,6 +299,9 @@ export default function PropertyDetailsScreen() {
       if (property.insurancePolicy) lines.push(`Policy #: ${property.insurancePolicy}`);
       if (property.insurancePremium != null) lines.push(`Annual Premium: ${formatCurrency(property.insurancePremium)}`);
       if (property.insuranceRenewalDate) lines.push(`Renewal Date: ${formatDate(property.insuranceRenewalDate)}`);
+    } else if (reminder.title.toLowerCase().includes('property tax')) {
+      if (property.propertyTax != null) lines.push(`Property Tax: ${formatCurrency(property.propertyTax)}`);
+      if (property.propertyTaxDueDate) lines.push(`Tax Due Date: ${formatDate(property.propertyTaxDueDate)}`);
     }
 
     if (reminder.notes) {
@@ -194,6 +309,44 @@ export default function PropertyDetailsScreen() {
     }
 
     return lines.join('\n');
+  };
+
+  const openAttachedFile = async (uri: string) => {
+    try {
+      if (uri.startsWith('http://') || uri.startsWith('https://')) {
+        await Linking.openURL(uri);
+        return;
+      }
+
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(uri, { dialogTitle: 'Open or print file' });
+        return;
+      }
+
+      await Linking.openURL(uri);
+    } catch (error) {
+      console.error('Error opening attachment:', error);
+      Alert.alert('Open failed', 'Could not open this file on the device.');
+    }
+  };
+
+  const shareAttachedFile = async (uri: string, title: string) => {
+    try {
+      if (uri.startsWith('http://') || uri.startsWith('https://')) {
+        await Share.share({ title, message: uri, url: uri });
+        return;
+      }
+
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(uri, { dialogTitle: `Share ${title}` });
+        return;
+      }
+
+      await Share.share({ title, message: uri });
+    } catch (error) {
+      console.error('Error sharing attachment:', error);
+      Alert.alert('Share failed', 'Could not share this file from the device.');
+    }
   };
 
   const handleDelete = () => {
@@ -205,9 +358,15 @@ export default function PropertyDetailsScreen() {
         { 
           text: "Delete", 
           style: "destructive",
-          onPress: () => {
-            deleteProperty(property.id);
-            router.back();
+          onPress: async () => {
+            try {
+              await deleteProperty(property.id);
+              router.back();
+            } catch (error) {
+              console.error('Error deleting property:', error);
+              const message = error instanceof Error ? error.message : 'Failed to delete property. Please try again.';
+              Alert.alert('Error', message);
+            }
           }
         }
       ]
@@ -222,6 +381,7 @@ export default function PropertyDetailsScreen() {
     <SafeAreaView style={styles.container} edges={["bottom"]}>
     <ScrollView 
       showsVerticalScrollIndicator={false}
+      keyboardShouldPersistTaps="handled"
       contentContainerStyle={{ paddingBottom: 16 }}
     >
       {/* Header */}
@@ -241,6 +401,20 @@ export default function PropertyDetailsScreen() {
             >
               <Edit size={16} color="#3B82F6" />
               <Text style={styles.editButtonText}>Edit</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.summaryButton}
+              onPress={() => router.push(`/property-summary?id=${property.id}` as any)}
+            >
+              <Share2 size={16} color="#2563EB" />
+              <Text style={styles.summaryButtonText}>Share Summary</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.maintenanceButton}
+              onPress={() => router.push(`/property-maintenance?id=${property.id}` as any)}
+            >
+              <Wrench size={16} color="#047857" />
+              <Text style={styles.maintenanceButtonText}>Maintenance</Text>
             </TouchableOpacity>
             <TouchableOpacity 
               style={[styles.galleryHeaderBtn, showGallery && styles.galleryHeaderBtnActive]}
@@ -322,7 +496,10 @@ export default function PropertyDetailsScreen() {
                       <Text style={styles.galleryCaptionText} numberOfLines={1}>{photo.caption}</Text>
                     </View>
                   ) : null}
-                  <Text style={styles.galleryDate}>{formatDate(photo.date)}</Text>
+                  <Text style={styles.galleryDate}>{formatDate(photo.date ?? undefined)}</Text>
+                  <TouchableOpacity style={styles.galleryEditCaptionBtn} onPress={() => openCaptionEditor(photo)}>
+                    <Text style={styles.galleryEditCaptionBtnText}>{photo.caption ? 'Edit Caption' : 'Add Caption'}</Text>
+                  </TouchableOpacity>
                 </TouchableOpacity>
               ))}
             </View>
@@ -362,6 +539,12 @@ export default function PropertyDetailsScreen() {
                   <View style={styles.metricCard}>
                     <Text style={styles.metricLabel}>Property Tax /yr</Text>
                     <Text style={styles.metricValue}>{formatCurrency(property.propertyTax)}</Text>
+                  </View>
+                )}
+                {!!property.propertyTaxDueDate && (
+                  <View style={styles.metricCard}>
+                    <Text style={styles.metricLabel}>Tax Due</Text>
+                    <Text style={styles.metricValue}>{formatDate(property.propertyTaxDueDate)}</Text>
                   </View>
                 )}
               </View>
@@ -435,6 +618,12 @@ export default function PropertyDetailsScreen() {
                   <Text style={styles.detailLabel}>Type</Text>
                   <Text style={styles.detailValue}>{property.type.replace('-', ' ')}</Text>
                 </View>
+                {property.squareFootage != null && property.squareFootage > 0 && (
+                  <View style={styles.detailRow}>
+                    <Text style={styles.detailLabel}>Square Footage</Text>
+                    <Text style={styles.detailValue}>{property.squareFootage.toLocaleString()} sq ft</Text>
+                  </View>
+                )}
                 <View style={styles.detailRow}>
                   <Text style={styles.detailLabel}>Purchase Date</Text>
                   <Text style={styles.detailValue}>{formatDate(property.purchaseDate)}</Text>
@@ -546,6 +735,20 @@ export default function PropertyDetailsScreen() {
               </View>
             )}
 
+            {!!property.customFields?.length && (
+              <View style={styles.section}>
+                <Text style={styles.sectionTitle}>Custom Information</Text>
+                <View style={styles.detailsGrid}>
+                  {property.customFields.map(field => (
+                    <View key={field.id} style={styles.detailRow}>
+                      <Text style={styles.detailLabel}>{field.label}</Text>
+                      <Text style={[styles.detailValue, styles.customDetailValue]}>{field.value}</Text>
+                    </View>
+                  ))}
+                </View>
+              </View>
+            )}
+
             {/* Notes */}
             {!!property.notes && (
               <View style={styles.section}>
@@ -588,8 +791,26 @@ export default function PropertyDetailsScreen() {
                     </Text>
                   </View>
                   <Text style={styles.transactionMeta}>
-                    {transaction.category} • {formatDate(transaction.date)}
+                    {transaction.category} • {formatTransactionDate(transaction.date)}
                   </Text>
+                  {!!transaction.receiptUri && (
+                    <View style={styles.attachmentActions}>
+                      <TouchableOpacity
+                        style={styles.attachmentButton}
+                        onPress={() => openAttachedFile(transaction.receiptUri!)}
+                      >
+                        <FileText size={14} color="#3B82F6" />
+                        <Text style={styles.attachmentButtonText}>Open / Print</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={styles.attachmentButton}
+                        onPress={() => shareAttachedFile(transaction.receiptUri!, transaction.receiptName || transaction.description)}
+                      >
+                        <FileText size={14} color="#3B82F6" />
+                        <Text style={styles.attachmentButtonText}>Share</Text>
+                      </TouchableOpacity>
+                    </View>
+                  )}
                 </View>
               ))
             )}
@@ -599,21 +820,67 @@ export default function PropertyDetailsScreen() {
         {activeTab === "documents" && (
           <View>
             <View style={styles.sectionHeader}>
-              <Text style={styles.sectionTitle}>Documents ({receipts.length})</Text>
+              <Text style={styles.sectionTitle}>Documents ({receipts.length + propertyLeaseDocuments.length})</Text>
               <TouchableOpacity
                 style={styles.addButton}
-                onPress={() => router.push('/add-receipt' as any)}
+                onPress={() => router.push('/create-lease-document' as any)}
               >
                 <Plus size={16} color="#FFFFFF" />
-                <Text style={styles.addButtonText}>Add</Text>
+                <Text style={styles.addButtonText}>Add Document</Text>
               </TouchableOpacity>
             </View>
-            {receipts.length === 0 ? (
+
+            {propertyLeaseFolders.length > 0 && (
+              <View style={styles.propertyDocumentSection}>
+                <Text style={styles.documentSectionLabel}>Folders</Text>
+                {propertyLeaseFolders.map(folder => {
+                  const folderDocumentCount = propertyLeaseDocuments.filter(document => document.folderId === folder.id).length;
+                  return (
+                    <TouchableOpacity
+                      key={folder.id}
+                      style={[styles.propertyFolderRow, { borderLeftColor: folder.color || "#3B82F6" }]}
+                      onPress={() => router.push(`/lease-folder/${folder.id}` as any)}
+                    >
+                      <Folder size={22} color={folder.color || "#3B82F6"} />
+                      <View style={styles.propertyFolderInfo}>
+                        <Text style={styles.propertyFolderName}>{folder.name}</Text>
+                        <Text style={styles.propertyFolderCount}>{folderDocumentCount} document{folderDocumentCount === 1 ? "" : "s"}</Text>
+                      </View>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            )}
+
+            {propertyLeaseDocuments.length > 0 && (
+              <View style={styles.propertyDocumentSection}>
+                <Text style={styles.documentSectionLabel}>Property Documents</Text>
+                {propertyLeaseDocuments.map(document => {
+                  const folder = propertyLeaseFolders.find(item => item.id === document.folderId);
+                  return (
+                    <TouchableOpacity
+                      key={document.id}
+                      style={styles.propertyDocumentRow}
+                      onPress={() => router.push(`/lease-document/${document.id}` as any)}
+                    >
+                      <FileText size={21} color="#2563EB" />
+                      <View style={styles.propertyDocumentInfo}>
+                        <Text style={styles.propertyDocumentTitle}>{document.title}</Text>
+                        <Text style={styles.propertyDocumentMeta}>{folder?.name || "Unfiled"} · {document.type}</Text>
+                      </View>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            )}
+
+            {receipts.length > 0 && <Text style={styles.documentSectionLabel}>Receipts</Text>}
+            {receipts.length === 0 && propertyLeaseDocuments.length === 0 && propertyLeaseFolders.length === 0 ? (
               <View style={styles.emptyState}>
                 <FileText size={48} color="#D1D5DB" />
                 <Text style={styles.emptyStateText}>No documents yet</Text>
               </View>
-            ) : (
+            ) : receipts.length > 0 ? (
               <View style={styles.documentsGrid}>
                 {receipts.map(receipt => (
                   <View key={receipt.id} style={styles.documentCard}>
@@ -631,7 +898,7 @@ export default function PropertyDetailsScreen() {
                   </View>
                 ))}
               </View>
-            )}
+            ) : null}
           </View>
         )}
 
@@ -688,6 +955,9 @@ export default function PropertyDetailsScreen() {
                     if (property.insurancePolicy) lines.push(`Policy #: ${property.insurancePolicy}`);
                     if (property.insurancePremium != null) lines.push(`Annual Premium: ${formatCurrency(property.insurancePremium)}`);
                     if (property.insuranceRenewalDate) lines.push(`Renewal Date: ${formatDate(property.insuranceRenewalDate)}`);
+                  } else if (reminder.title.toLowerCase().includes('property tax')) {
+                    if (property.propertyTax != null) lines.push(`\nProperty Tax: ${formatCurrency(property.propertyTax)}`);
+                    if (property.propertyTaxDueDate) lines.push(`Tax Due Date: ${formatDate(property.propertyTaxDueDate)}`);
                   }
 
                   if (reminder.notes) {
@@ -797,7 +1067,15 @@ export default function PropertyDetailsScreen() {
                             {
                               text: 'Delete',
                               style: 'destructive',
-                              onPress: () => deleteReminder(reminder.id),
+                              onPress: async () => {
+                                try {
+                                  await deleteReminder(reminder.id);
+                                } catch (error) {
+                                  console.error('Error deleting reminder:', error);
+                                  const message = error instanceof Error ? error.message : 'Failed to delete reminder. Please try again.';
+                                  Alert.alert('Error', message);
+                                }
+                              },
                             },
                           ]
                         );
@@ -839,37 +1117,95 @@ export default function PropertyDetailsScreen() {
 
       {/* Add Photo Modal */}
       <Modal visible={showPhotoModal} animationType="fade" transparent>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? 80 : 24}
+          style={styles.modalKeyboardContainer}
+        >
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Add Photo</Text>
-              <TouchableOpacity onPress={() => { setShowPhotoModal(false); setSelectedPhotoUri(null); }}>
+              <TouchableOpacity onPress={resetPhotoWizard}>
                 <X size={24} color="#6B7280" />
               </TouchableOpacity>
             </View>
-            {selectedPhotoUri && (
-              <Image source={{ uri: selectedPhotoUri }} style={styles.modalPreview} />
+            {selectedPhotoUris[photoWizardIndex] && <Image source={{ uri: selectedPhotoUris[photoWizardIndex] }} style={styles.modalPreview} />}
+            {selectedPhotoUris.length > 1 && (
+              <Text style={styles.modalCountText}>Photo {photoWizardIndex + 1} of {selectedPhotoUris.length}</Text>
             )}
             <TextInput
               style={styles.captionInput}
               placeholder="Add a caption (optional)"
               placeholderTextColor="#9CA3AF"
-              value={photoCaption}
-              onChangeText={setPhotoCaption}
+              value={photoCaptions[photoWizardIndex] || ''}
+              onChangeText={updateCurrentPhotoCaption}
             />
+            {isSavingPhoto && photoSaveProgress.total > 0 && (
+              <Text style={styles.modalProgressText}>Saving {photoSaveProgress.completed} of {photoSaveProgress.total}...</Text>
+            )}
             <View style={styles.modalActions}>
               <TouchableOpacity
                 style={styles.modalCancelBtn}
-                onPress={() => { setShowPhotoModal(false); setSelectedPhotoUri(null); }}
+                onPress={() => {
+                  if (selectedPhotoUris.length > 1 && photoWizardIndex > 0) {
+                    setPhotoWizardIndex(prev => prev - 1);
+                    return;
+                  }
+                  resetPhotoWizard();
+                }}
               >
-                <Text style={styles.modalCancelBtnText}>Cancel</Text>
+                <Text style={styles.modalCancelBtnText}>{selectedPhotoUris.length > 1 && photoWizardIndex > 0 ? 'Back' : 'Cancel'}</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.modalSaveBtn} onPress={savePhoto}>
-                <Text style={styles.modalSaveBtnText}>Save Photo</Text>
+              <TouchableOpacity style={[styles.modalSaveBtn, isSavingPhoto && { opacity: 0.7 }]} onPress={handlePhotoWizardPrimaryAction} disabled={isSavingPhoto}>
+                <Text style={styles.modalSaveBtnText}>
+                  {isSavingPhoto
+                    ? 'Saving...'
+                    : (selectedPhotoUris.length > 1 && photoWizardIndex < selectedPhotoUris.length - 1 ? 'Next Photo' : (selectedPhotoUris.length > 1 ? 'Save Photos' : 'Save Photo'))}
+                </Text>
               </TouchableOpacity>
             </View>
           </View>
         </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      <Modal visible={!!editingPhoto} animationType="fade" transparent onRequestClose={() => setEditingPhoto(null)}>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? 80 : 24}
+          style={styles.modalKeyboardContainer}
+        >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>{editingPhoto?.caption ? 'Edit Caption' : 'Add Caption'}</Text>
+              <TouchableOpacity onPress={() => { setEditingPhoto(null); setEditingCaption(''); }}>
+                <X size={24} color="#6B7280" />
+              </TouchableOpacity>
+            </View>
+            {editingPhoto?.uri ? <Image source={{ uri: editingPhoto.uri }} style={styles.modalPreview} /> : null}
+            <TextInput
+              style={styles.captionInput}
+              placeholder="Add a caption (optional)"
+              placeholderTextColor="#9CA3AF"
+              value={editingCaption}
+              onChangeText={setEditingCaption}
+            />
+            <View style={styles.modalActions}>
+              <TouchableOpacity
+                style={styles.modalCancelBtn}
+                onPress={() => { setEditingPhoto(null); setEditingCaption(''); }}
+              >
+                <Text style={styles.modalCancelBtnText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.modalSaveBtn, isUpdatingCaption && { opacity: 0.7 }]} onPress={saveEditedCaption} disabled={isUpdatingCaption}>
+                <Text style={styles.modalSaveBtnText}>{isUpdatingCaption ? 'Saving...' : 'Save Caption'}</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+        </KeyboardAvoidingView>
       </Modal>
     </ScrollView>
     </SafeAreaView>
@@ -916,6 +1252,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     gap: 8,
     marginTop: 12,
+    flexWrap: "wrap",
   },
   editButton: {
     flexDirection: "row",
@@ -929,6 +1266,38 @@ const styles = StyleSheet.create({
   },
   editButtonText: {
     color: "#3B82F6",
+    fontSize: 14,
+    fontWeight: "500" as const,
+  },
+  summaryButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: "#93C5FD",
+    backgroundColor: "#EFF6FF",
+    gap: 4,
+  },
+  summaryButtonText: {
+    color: "#2563EB",
+    fontSize: 14,
+    fontWeight: "500" as const,
+  },
+  maintenanceButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: "#A7F3D0",
+    backgroundColor: "#ECFDF5",
+    gap: 4,
+  },
+  maintenanceButtonText: {
+    color: "#047857",
     fontSize: 14,
     fontWeight: "500" as const,
   },
@@ -1048,6 +1417,12 @@ const styles = StyleSheet.create({
     color: "#111827",
     textTransform: "capitalize" as const,
   },
+  customDetailValue: {
+    flex: 1,
+    marginLeft: 12,
+    textAlign: "right",
+    textTransform: "none" as const,
+  },
   applianceCard: {
     backgroundColor: "#FFFFFF",
     borderRadius: 8,
@@ -1102,6 +1477,86 @@ const styles = StyleSheet.create({
   transactionMeta: {
     fontSize: 12,
     color: "#6B7280",
+  },
+  attachmentActions: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 10,
+  },
+  attachmentButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: "#BFDBFE",
+    backgroundColor: "#EFF6FF",
+    borderRadius: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    gap: 4,
+  },
+  attachmentButtonText: {
+    color: "#3B82F6",
+    fontSize: 12,
+    fontWeight: "600" as const,
+  },
+  propertyDocumentSection: {
+    marginBottom: 18,
+  },
+  documentSectionLabel: {
+    color: "#475569",
+    fontSize: 13,
+    fontWeight: "700" as const,
+    textTransform: "uppercase" as const,
+    marginBottom: 8,
+  },
+  propertyFolderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 11,
+    backgroundColor: "#FFFFFF",
+    borderLeftWidth: 4,
+    borderRadius: 9,
+    padding: 13,
+    marginBottom: 8,
+  },
+  propertyFolderInfo: {
+    flex: 1,
+  },
+  propertyFolderName: {
+    color: "#1E293B",
+    fontSize: 15,
+    fontWeight: "700" as const,
+  },
+  propertyFolderCount: {
+    color: "#64748B",
+    fontSize: 12,
+    marginTop: 2,
+  },
+  propertyDocumentRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 11,
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    borderRadius: 9,
+    padding: 13,
+    marginBottom: 8,
+  },
+  propertyDocumentInfo: {
+    flex: 1,
+  },
+  propertyDocumentTitle: {
+    color: "#1E293B",
+    fontSize: 15,
+    fontWeight: "600" as const,
+  },
+  propertyDocumentMeta: {
+    color: "#64748B",
+    fontSize: 12,
+    marginTop: 3,
+    textTransform: "capitalize" as const,
   },
   documentsGrid: {
     flexDirection: "row",
@@ -1356,12 +1811,32 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6,
     paddingBottom: 6,
   },
+  galleryEditCaptionBtn: {
+    marginHorizontal: 6,
+    marginBottom: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    backgroundColor: "#EFF6FF",
+    alignItems: "center",
+  },
+  galleryEditCaptionBtnText: {
+    fontSize: 11,
+    fontWeight: "600" as const,
+    color: "#2563EB",
+  },
   modalOverlay: {
-    flex: 1,
     backgroundColor: "rgba(0, 0, 0, 0.6)",
+    width: "100%",
+    flex: 1,
     justifyContent: "center",
     alignItems: "center",
     padding: 24,
+  },
+  modalKeyboardContainer: {
+    flex: 1,
+    width: "100%",
+    justifyContent: "center",
+    alignItems: "center",
   },
   modalContent: {
     backgroundColor: "#FFFFFF",
@@ -1386,6 +1861,19 @@ const styles = StyleSheet.create({
   modalPreview: {
     width: "100%",
     height: 250,
+  },
+  modalCountText: {
+    fontSize: 13,
+    color: "#6B7280",
+    marginHorizontal: 16,
+    marginTop: 12,
+  },
+  modalProgressText: {
+    fontSize: 12,
+    color: "#6B7280",
+    marginHorizontal: 16,
+    marginTop: -6,
+    marginBottom: 4,
   },
   captionInput: {
     margin: 16,

@@ -1,22 +1,39 @@
 import { createClient } from "@supabase/supabase-js";
-import * as SecureStore from "expo-secure-store";
 import { Platform } from "react-native";
+import * as SecureStore from "expo-secure-store";
 
-// Baked-in Rork platform configuration so standalone builds (EAS APKs) work
-// without any environment variables. These are public client values — they
-// ship inside every app bundle by design.
-const SUPABASE_URL = "https://rssrexqqtpbtgofbhrzq.supabase.co";
-const SUPABASE_ANON_KEY = "sb_publishable_WjBO_apqyc9SdpcM7viaaA_Fl8890Ll";
+// Public Supabase client values are baked into the bundle so preview APKs do
+// not depend on EAS environment variables.
+const SUPABASE_URL = "https://rwjiuirzdkdphfsusuij.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_hMa95c9H3BtdRNLi1jo6Wg_Pw0ZNNxh";
+
+const authStorage = {
+  getItem: async (key: string) => {
+    if (Platform.OS === "web") return globalThis.localStorage?.getItem(key) ?? null;
+    return SecureStore.getItemAsync(key);
+  },
+  setItem: async (key: string, value: string) => {
+    if (Platform.OS === "web") {
+      globalThis.localStorage?.setItem(key, value);
+      return;
+    }
+    await SecureStore.setItemAsync(key, value);
+  },
+  removeItem: async (key: string) => {
+    if (Platform.OS === "web") {
+      globalThis.localStorage?.removeItem(key);
+      return;
+    }
+    await SecureStore.deleteItemAsync(key);
+  },
+};
 
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   auth: {
-    persistSession: false,
-  },
-  accessToken: async () => {
-    if (Platform.OS === "web") {
-      return localStorage.getItem("access_token") ?? null;
-    }
-    const token = await SecureStore.getItemAsync("access_token");
-    return token ?? null;
+    storage: authStorage,
+    persistSession: true,
+    autoRefreshToken: true,
+    detectSessionInUrl: false,
+    flowType: "pkce",
   },
 });
